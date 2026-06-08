@@ -1432,6 +1432,9 @@ async def ingest_career_ops(request: Request):
 
     secret = os.environ.get("CAREER_OPS_WEBHOOK_SECRET", "")
     if not secret:
+        _env_cfg = read_env(ENV_FILE)
+        secret = _env_cfg.get("CAREER_OPS_WEBHOOK_SECRET", "")
+    if not secret:
         return JSONResponse({"error": "Career-Ops ingest secret is not configured"}, status_code=503)
 
     raw_body = await request.body()
