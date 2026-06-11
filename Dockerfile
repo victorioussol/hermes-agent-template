@@ -1,5 +1,7 @@
 FROM ghcr.io/astral-sh/uv:python3.12-bookworm-slim
 
+# cache-bust: enable-dashboard-chat-20260611
+
 ARG HERMES_REF=v2026.5.29.2
 
 RUN apt-get update && \

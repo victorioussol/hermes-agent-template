@@ -853,6 +853,12 @@ class Dashboard:
                 "--host", HERMES_DASHBOARD_HOST,
                 "--port", str(HERMES_DASHBOARD_PORT),
                 "--no-open",
+                # Enable the native dashboard's embedded Chat tab. Relying only
+                # on Railway's HERMES_DASHBOARD_TUI env var is not enough here:
+                # env propagation has been inconsistent in hosted wrapper
+                # subprocesses, and the browser hides Chat unless the dashboard
+                # injects __HERMES_DASHBOARD_EMBEDDED_CHAT__=true.
+                "--tui",
                 # --skip-build: the Dockerfile pre-builds the React dashboard
                 # into hermes_cli/web_dist/ at image time. This flag tells
                 # hermes to trust that dist and skip its npm build check,
@@ -860,6 +866,7 @@ class Dashboard:
                 "--skip-build",
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.STDOUT,
+                env={**os.environ, "HERMES_DASHBOARD_TUI": "1"},
             )
             print(f"[dashboard] spawned pid={self.proc.pid} → {HERMES_DASHBOARD_URL}", flush=True)
             self._drain_task = asyncio.create_task(self._drain())
