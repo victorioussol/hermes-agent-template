@@ -1,8 +1,8 @@
 FROM ghcr.io/astral-sh/uv:python3.12-bookworm-slim
 
-# cache-bust: enable-dashboard-chat-20260611
+# cache-bust: hermes-v2026.6.19-20260626
 
-ARG HERMES_REF=v2026.5.29.2
+ARG HERMES_REF=v2026.6.19
 
 RUN apt-get update && \
  apt-get install -y --no-install-recommends curl ca-certificates git tini && \
@@ -12,7 +12,7 @@ RUN apt-get update && \
 
 RUN git clone --depth 1 --branch ${HERMES_REF} https://github.com/NousResearch/hermes-agent.git /opt/hermes-agent && \
  cd /opt/hermes-agent && \
- uv pip install --system --no-cache -e ".[all,messaging,tts-premium,honcho,bedrock,anthropic,edge-tts,hindsight]" && \
+ uv pip install --system --no-cache -e ".[all,messaging,tts-premium,honcho,bedrock,anthropic,edge-tts,hindsight,vision]" && \
  cd /opt/hermes-agent/web && \
  npm install --silent && \
  npm run build && \
