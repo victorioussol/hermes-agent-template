@@ -1,6 +1,6 @@
 FROM ghcr.io/astral-sh/uv:python3.12-bookworm-slim
 
-# cache-bust: hermes-v2026.6.19-20260626
+# cache-bust: app-ops-action-inbox-20260708
 
 ARG HERMES_REF=v2026.6.19
 

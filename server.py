@@ -593,7 +593,7 @@ COOKIE_MAX_AGE = 7 * 86400  # 7 days
 COOKIE_SECRET = secrets.token_bytes(32)
 
 # Public paths — no auth required. Everything else is behind the cookie gate.
-PUBLIC_PATHS = {"/health", "/login", "/logout", "/ingest/career-ops"}
+PUBLIC_PATHS = {"/health", "/login", "/logout", "/ingest/career-ops", "/ingest/app-ops-action-inbox"}
 
 
 def _make_auth_token() -> str:
@@ -1672,6 +1672,207 @@ async def post_outbox_ack(request: Request):
     return JSONResponse({"status": "acked", "cursor": ack_cursor, "remaining": len(kept)})
 
 
+# ── Guiri App Ops Action Inbox ────────────────────────────────────────────────
+# Supabase app-ops-action-inbox posts operational items here. The wrapper does
+# only cheap validation + durable logging, then starts a Hermes agent run in the
+# background so Supabase does not wait on investigations or Linear API calls.
+_APP_OPS_DIR = Path(HERMES_HOME) / "app-ops-action-inbox"
+_APP_OPS_DIR.mkdir(parents=True, exist_ok=True)
+_APP_OPS_RUNS_DIR = _APP_OPS_DIR / "runs"
+_APP_OPS_RUNS_DIR.mkdir(parents=True, exist_ok=True)
+_APP_OPS_LOG = _APP_OPS_DIR / "actions.jsonl"
+_APP_OPS_MAX_BYTES = int(os.environ.get("APP_OPS_ACTION_MAX_BYTES", "1048576"))
+_APP_OPS_ESCALATION_RE = re.compile(
+    r"\b(access|approval|billing|merge|rollback|product decision)\b",
+    re.IGNORECASE,
+)
+
+
+def _read_secret(name: str) -> str:
+    val = os.environ.get(name, "")
+    if not val:
+        val = read_env(ENV_FILE).get(name, "")
+    return val
+
+
+def _append_app_ops_action(record: dict) -> None:
+    record = dict(record)
+    record.setdefault("logged_at", datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"))
+    with open(_APP_OPS_LOG, "a", encoding="utf-8") as fh:
+        fh.write(json.dumps(record, ensure_ascii=False, sort_keys=True) + "\n")
+
+
+def _item_text(item: dict) -> str:
+    parts = []
+    for key in ("id", "title", "summary", "text", "description", "reason", "action", "url"):
+        val = item.get(key)
+        if val:
+            parts.append(f"{key}: {val}")
+    if not parts:
+        parts.append(json.dumps(item, ensure_ascii=False, sort_keys=True))
+    return "\n".join(parts)
+
+
+def _build_app_ops_prompt(payload_path: Path, delivery_id: str, hermes_items: list[dict]) -> str:
+    item_summaries = "\n\n".join(
+        f"Item {idx + 1}:\n{_item_text(item)}" for idx, item in enumerate(hermes_items)
+    )
+    return f"""You are Hermes handling the Guiri App Ops Action Inbox.
+
+Payload file: {payload_path}
+Delivery id: {delivery_id}
+
+Contract:
+- Read the payload JSON from the file above.
+- Only act on items where audience == "hermes" and handled is not true.
+- Investigate directly when possible using available tools.
+- For grouped backlog items, create or update exactly one Linear issue per backlog group. Search first for an existing issue before creating a new one. Prefix Linear issue titles with "[Guiri App Ops]" when creating new issues.
+- Escalate to Victor only when an item explicitly says access, approval, billing, merge, rollback, or product decision is required. If escalation is needed, send/emit a concise message naming the item and the decision/access needed. Do not escalate for routine diagnostics or backlog filing.
+- Log what action you took. Keep the final answer concise and structured as JSON-ish text: delivery_id, handled_count, skipped_count, actions[], escalations[].
+
+Hermes-targeted item summaries:
+{item_summaries}
+"""
+
+
+async def _run_app_ops_agent(payload_path: Path, delivery_id: str, hermes_items: list[dict]) -> None:
+    started_at = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+    log_path = payload_path.with_suffix(".agent.log")
+    prompt = _build_app_ops_prompt(payload_path, delivery_id, hermes_items)
+    cmd = [
+        "hermes",
+        "--skills", "linear,systematic-debugging",
+        "chat",
+        "-q", prompt,
+        "--source", "app-ops-action-inbox",
+        "--toolsets", "terminal,file,web,search,skills,memory,session_search,discord",
+    ]
+    _append_app_ops_action({
+        "delivery_id": delivery_id,
+        "status": "agent_started",
+        "payload_path": str(payload_path),
+        "log_path": str(log_path),
+        "item_count": len(hermes_items),
+        "started_at": started_at,
+    })
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            *cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.STDOUT,
+            env={**os.environ, **read_env(ENV_FILE), "HERMES_HOME": HERMES_HOME},
+        )
+        try:
+            stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=int(os.environ.get("APP_OPS_AGENT_TIMEOUT", "900")))
+        except asyncio.TimeoutError:
+            proc.kill()
+            stdout, _ = await proc.communicate()
+            status = "agent_timeout"
+        else:
+            status = "agent_finished" if proc.returncode == 0 else "agent_error"
+        output = stdout.decode("utf-8", errors="replace") if stdout else ""
+        log_path.write_text(output, encoding="utf-8")
+        _append_app_ops_action({
+            "delivery_id": delivery_id,
+            "status": status,
+            "returncode": proc.returncode,
+            "payload_path": str(payload_path),
+            "log_path": str(log_path),
+            "output_tail": output[-4000:],
+        })
+    except Exception as e:
+        _append_app_ops_action({
+            "delivery_id": delivery_id,
+            "status": "agent_exception",
+            "payload_path": str(payload_path),
+            "error": repr(e),
+        })
+
+
+async def ingest_app_ops_action_inbox(request: Request):
+    """Receive Guiri App Ops Action Inbox events from Supabase."""
+    content_length = request.headers.get("content-length")
+    if content_length:
+        try:
+            if int(content_length) > _APP_OPS_MAX_BYTES:
+                return JSONResponse({"error": "Payload too large"}, status_code=413)
+        except ValueError:
+            return JSONResponse({"error": "Invalid Content-Length"}, status_code=400)
+
+    secret = _read_secret("HERMES_ACTION_WEBHOOK_SECRET") or _read_secret("HERMES_ACTION_KEY")
+    if not secret:
+        return JSONResponse({"error": "App Ops action secret is not configured"}, status_code=503)
+
+    supplied = request.headers.get("x-hermes-action-key", "")
+    if not supplied or not hmac.compare_digest(supplied, secret):
+        return JSONResponse({"error": "Invalid action key"}, status_code=401)
+
+    raw_body = await request.body()
+    if len(raw_body) > _APP_OPS_MAX_BYTES:
+        return JSONResponse({"error": "Payload too large"}, status_code=413)
+    try:
+        payload = json.loads(raw_body)
+    except json.JSONDecodeError:
+        return JSONResponse({"error": "Cannot parse body"}, status_code=400)
+    if not isinstance(payload, dict):
+        return JSONResponse({"error": "Payload must be a JSON object"}, status_code=400)
+
+    required = ["source", "generated_at", "requires_victor", "text", "items", "handled"]
+    missing = [k for k in required if k not in payload]
+    if missing:
+        return JSONResponse({"error": "Missing required fields", "missing": missing}, status_code=422)
+    if not isinstance(payload.get("items"), list):
+        return JSONResponse({"error": "items must be a list"}, status_code=422)
+
+    delivery_id = (
+        request.headers.get("X-Request-ID")
+        or str(payload.get("id") or payload.get("generated_at") or secrets.token_hex(8))
+    )
+    safe_id = re.sub(r"[^A-Za-z0-9_.-]+", "-", delivery_id)[:120] or secrets.token_hex(8)
+    payload_path = _APP_OPS_RUNS_DIR / f"{safe_id}.json"
+    payload_path.write_bytes(raw_body)
+
+    hermes_items = []
+    skipped = []
+    escalations = []
+    for idx, item in enumerate(payload["items"]):
+        if not isinstance(item, dict):
+            skipped.append({"index": idx, "reason": "item_not_object"})
+            continue
+        if str(item.get("audience", "")).lower() != "hermes":
+            skipped.append({"index": idx, "reason": "audience_not_hermes"})
+            continue
+        if item.get("handled") is True:
+            skipped.append({"index": idx, "reason": "already_handled"})
+            continue
+        hermes_items.append(item)
+        if _APP_OPS_ESCALATION_RE.search(_item_text(item)):
+            escalations.append({"index": idx, "reason": "explicit_escalation_keyword"})
+
+    if hermes_items:
+        asyncio.create_task(_run_app_ops_agent(payload_path, delivery_id, hermes_items))
+        status = "accepted"
+        action = "queued_hermes_agent_run"
+    else:
+        status = "ignored"
+        action = "no_unhandled_hermes_items"
+
+    response = {
+        "status": status,
+        "route": "app-ops-action-inbox",
+        "delivery_id": delivery_id,
+        "payload_path": str(payload_path),
+        "hermes_item_count": len(hermes_items),
+        "skipped_count": len(skipped),
+        "skipped": skipped[:20],
+        "escalation_candidates": escalations,
+        "action": action,
+        "log_path": str(_APP_OPS_LOG),
+    }
+    _append_app_ops_action(response)
+    return JSONResponse(response, status_code=202 if hermes_items else 200)
+
+
 ANY_METHOD = ["GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS"]
 
 routes = [
@@ -1681,6 +1882,7 @@ routes = [
     Route("/login",                             login_post,          methods=["POST"]),
     Route("/logout",                            logout),
     Route("/ingest/career-ops",                 ingest_career_ops,   methods=["POST"]),
+    Route("/ingest/app-ops-action-inbox",        ingest_app_ops_action_inbox, methods=["POST"]),
     Route("/outbox/career-ops",                 get_outbox_career_ops, methods=["GET"]),
     Route("/outbox/career-ops/ack",             post_outbox_ack,     methods=["POST"]),
 
