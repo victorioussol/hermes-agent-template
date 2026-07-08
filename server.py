@@ -1682,8 +1682,17 @@ _APP_OPS_RUNS_DIR = _APP_OPS_DIR / "runs"
 _APP_OPS_RUNS_DIR.mkdir(parents=True, exist_ok=True)
 _APP_OPS_LOG = _APP_OPS_DIR / "actions.jsonl"
 _APP_OPS_MAX_BYTES = int(os.environ.get("APP_OPS_ACTION_MAX_BYTES", "1048576"))
-_APP_OPS_ESCALATION_RE = re.compile(
+_APP_OPS_ESCALATION_TOPIC_RE = re.compile(
     r"\b(access|approval|billing|merge|rollback|product decision)\b",
+    re.IGNORECASE,
+)
+_APP_OPS_ESCALATION_REQUIRED_RE = re.compile(
+    r"\b(requires?|required|needs?|needed|blocked|cannot|can't|must|waiting for|ask victor|escalate)\b",
+    re.IGNORECASE,
+)
+_APP_OPS_NEGATED_ESCALATION_RE = re.compile(
+    r"\b(no|not|none|without)\b.{0,80}\b(access|approval|billing|merge|rollback|product decision)\b|"
+    r"\b(access|approval|billing|merge|rollback|product decision)\b.{0,80}\b(not required|not needed|unneeded|unnecessary|isn't required|is not required)\b",
     re.IGNORECASE,
 )
 
@@ -1711,6 +1720,21 @@ def _item_text(item: dict) -> str:
     if not parts:
         parts.append(json.dumps(item, ensure_ascii=False, sort_keys=True))
     return "\n".join(parts)
+
+
+def _item_requires_victor_escalation(item: dict) -> bool:
+    """True only when an item explicitly says Victor access/approval/etc. is required.
+
+    Mentioning an escalation topic in a negated/no-op phrase (for example
+    "no access required") must not mark the item as an escalation candidate.
+    """
+    text = _item_text(item)
+    if _APP_OPS_NEGATED_ESCALATION_RE.search(text):
+        return False
+    return bool(
+        _APP_OPS_ESCALATION_TOPIC_RE.search(text)
+        and _APP_OPS_ESCALATION_REQUIRED_RE.search(text)
+    )
 
 
 def _build_app_ops_prompt(payload_path: Path, delivery_id: str, hermes_items: list[dict]) -> str:
@@ -1846,8 +1870,8 @@ async def ingest_app_ops_action_inbox(request: Request):
             skipped.append({"index": idx, "reason": "already_handled"})
             continue
         hermes_items.append(item)
-        if _APP_OPS_ESCALATION_RE.search(_item_text(item)):
-            escalations.append({"index": idx, "reason": "explicit_escalation_keyword"})
+        if _item_requires_victor_escalation(item):
+            escalations.append({"index": idx, "reason": "explicit_escalation_required"})
 
     if hermes_items:
         asyncio.create_task(_run_app_ops_agent(payload_path, delivery_id, hermes_items))
