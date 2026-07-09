@@ -593,7 +593,7 @@ COOKIE_MAX_AGE = 7 * 86400  # 7 days
 COOKIE_SECRET = secrets.token_bytes(32)
 
 # Public paths — no auth required. Everything else is behind the cookie gate.
-PUBLIC_PATHS = {"/health", "/login", "/logout", "/ingest/career-ops", "/ingest/app-ops-action-inbox"}
+PUBLIC_PATHS = {"/health", "/login", "/logout", "/ingest/career-ops", "/ingest/app-ops-action-inbox", "/outbox/app-ops-action-inbox"}
 
 
 def _make_auth_token() -> str:
@@ -1704,11 +1704,44 @@ def _read_secret(name: str) -> str:
     return val
 
 
+def _app_ops_action_secret() -> str:
+    return _read_secret("HERMES_ACTION_WEBHOOK_SECRET") or _read_secret("HERMES_ACTION_KEY")
+
+
+def _app_ops_action_key_authorized(request: Request, secret: str) -> bool:
+    supplied = request.headers.get("x-hermes-action-key", "")
+    return bool(supplied and hmac.compare_digest(supplied, secret))
+
+
 def _append_app_ops_action(record: dict) -> None:
     record = dict(record)
     record.setdefault("logged_at", datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"))
     with open(_APP_OPS_LOG, "a", encoding="utf-8") as fh:
         fh.write(json.dumps(record, ensure_ascii=False, sort_keys=True) + "\n")
+    log_fields = {
+        "status": record.get("status") or record.get("route"),
+        "delivery_id": record.get("delivery_id"),
+        "item_count": record.get("item_count") or record.get("hermes_item_count"),
+        "returncode": record.get("returncode"),
+        "log_path": record.get("log_path"),
+    }
+    summary = " ".join(f"{key}={value}" for key, value in log_fields.items() if value is not None)
+    print(f"[app-ops-action-inbox] {summary}", flush=True)
+
+
+def _read_app_ops_actions(limit: int = 50) -> list[dict]:
+    if not _APP_OPS_LOG.exists():
+        return []
+    records = []
+    for line in _APP_OPS_LOG.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            records.append(json.loads(line))
+        except Exception:
+            continue
+    return records[-limit:]
 
 
 def _item_text(item: dict) -> str:
@@ -1823,12 +1856,11 @@ async def ingest_app_ops_action_inbox(request: Request):
         except ValueError:
             return JSONResponse({"error": "Invalid Content-Length"}, status_code=400)
 
-    secret = _read_secret("HERMES_ACTION_WEBHOOK_SECRET") or _read_secret("HERMES_ACTION_KEY")
+    secret = _app_ops_action_secret()
     if not secret:
         return JSONResponse({"error": "App Ops action secret is not configured"}, status_code=503)
 
-    supplied = request.headers.get("x-hermes-action-key", "")
-    if not supplied or not hmac.compare_digest(supplied, secret):
+    if not _app_ops_action_key_authorized(request, secret):
         return JSONResponse({"error": "Invalid action key"}, status_code=401)
 
     raw_body = await request.body()
@@ -1897,6 +1929,28 @@ async def ingest_app_ops_action_inbox(request: Request):
     return JSONResponse(response, status_code=202 if hermes_items else 200)
 
 
+async def get_outbox_app_ops_action_inbox(request: Request):
+    """Return recent Guiri App Ops processing records for health checks."""
+    secret = _app_ops_action_secret()
+    if not secret:
+        return JSONResponse({"error": "App Ops action secret is not configured"}, status_code=503)
+    if not _app_ops_action_key_authorized(request, secret):
+        return JSONResponse({"error": "Invalid action key"}, status_code=401)
+
+    try:
+        limit = int(request.query_params.get("limit", "50"))
+    except ValueError:
+        return JSONResponse({"error": "Invalid limit"}, status_code=400)
+    limit = max(1, min(limit, 200))
+    records = _read_app_ops_actions(limit)
+    return JSONResponse({
+        "generated_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+        "route": "app-ops-action-inbox",
+        "count": len(records),
+        "records": records,
+    })
+
+
 ANY_METHOD = ["GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS"]
 
 routes = [
@@ -1907,6 +1961,7 @@ routes = [
     Route("/logout",                            logout),
     Route("/ingest/career-ops",                 ingest_career_ops,   methods=["POST"]),
     Route("/ingest/app-ops-action-inbox",        ingest_app_ops_action_inbox, methods=["POST"]),
+    Route("/outbox/app-ops-action-inbox",        get_outbox_app_ops_action_inbox, methods=["GET"]),
     Route("/outbox/career-ops",                 get_outbox_career_ops, methods=["GET"]),
     Route("/outbox/career-ops/ack",             post_outbox_ack,     methods=["POST"]),
 
