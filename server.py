@@ -1792,6 +1792,11 @@ Hermes-targeted item summaries:
 """
 
 
+def _agent_output_has_app_ops_result(output: str) -> bool:
+    lower = output.lower()
+    return "handled_count" in lower and "escalations" in lower
+
+
 async def _run_app_ops_agent(payload_path: Path, delivery_id: str, hermes_items: list[dict]) -> None:
     started_at = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
     log_path = payload_path.with_suffix(".agent.log")
@@ -1826,13 +1831,15 @@ async def _run_app_ops_agent(payload_path: Path, delivery_id: str, hermes_items:
             stdout, _ = await proc.communicate()
             status = "agent_timeout"
         else:
-            status = "agent_finished" if proc.returncode == 0 else "agent_error"
+            semantic_success = _agent_output_has_app_ops_result(stdout.decode("utf-8", errors="replace") if stdout else "")
+            status = "agent_finished" if proc.returncode == 0 or semantic_success else "agent_error"
         output = stdout.decode("utf-8", errors="replace") if stdout else ""
         log_path.write_text(output, encoding="utf-8")
         _append_app_ops_action({
             "delivery_id": delivery_id,
             "status": status,
             "returncode": proc.returncode,
+            "semantic_success": _agent_output_has_app_ops_result(output),
             "payload_path": str(payload_path),
             "log_path": str(log_path),
             "output_tail": output[-4000:],
