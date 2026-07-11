@@ -7,7 +7,9 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@300;400;500;600&display=swap" rel="stylesheet">
-<script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
+<script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.14.9/dist/cdn.min.js"
+        integrity="sha384-9Ax3MmS9AClxJyd5/zafcXXjxmwFhZCdsT6HJoJjarvCaAkJlk5QDzjLJm+Wdx5F"
+        crossorigin="anonymous"></script>
 <style>
   :root {
     --bg:        #0d0f14;
@@ -868,9 +870,11 @@
                    :placeholder="selectedProvider === 'xAI Grok (SuperGrok)' || selectedProvider === 'xAI' ? 'e.g. grok-4.3'
                      : selectedProvider === 'Anthropic (Claude)' ? 'e.g. claude-sonnet-4-20250514'
                      : selectedProvider === 'AWS Bedrock' ? 'e.g. anthropic.claude-3-5-sonnet-20241022-v2:0'
-                     : selectedProvider === 'Fireworks AI' ? 'e.g. accounts/fireworks/models/llama-v3p1-70b-instruct'
+                   : selectedProvider === 'Fireworks AI' ? 'e.g. accounts/fireworks/models/llama-v3p1-70b-instruct'
+                     : selectedProvider === 'OpenAI Codex' ? 'gpt-5.4'
                      : selectedProvider === 'Custom Endpoint' || selectedProvider === 'Azure Foundry' ? 'model-id as required by the endpoint'
                      : 'e.g. openai/gpt-4o-mini  or  deepseek/deepseek-chat'">
+            <p class="hint" x-show="selectedProvider === 'OpenAI Codex'">Uses the Codex credential already connected in the Hermes Dashboard. The Railway provider lock remains authoritative.</p>
             <p class="hint" x-show="selectedProvider === 'xAI Grok (SuperGrok)' || selectedProvider === 'xAI'">e.g. <code>grok-4.3</code>, <code>grok-4.20-0309-reasoning</code></p>
             <p class="hint" x-show="selectedProvider === 'Anthropic (Claude)'">e.g. <code>claude-sonnet-4-20250514</code>, <code>claude-opus-4-20250115</code></p>
             <p class="hint" x-show="selectedProvider === 'AWS Bedrock'">e.g. <code>anthropic.claude-3-5-sonnet-20241022-v2:0</code>, <code>us.meta.llama3-2-90b-instruct-v1:0</code></p>
@@ -1399,7 +1403,9 @@ function app() {
     { key: 'BROWSERBASE_API_KEY',    label: 'Browserbase',                secret: true  },
     { key: 'GITHUB_TOKEN',           label: 'GitHub',                     secret: true  },
     { key: 'VOICE_TOOLS_OPENAI_KEY', label: 'OpenAI Voice (Whisper/TTS)', secret: true  },
+    { key: 'ELEVENLABS_API_KEY',     label: 'ElevenLabs voice',          secret: true  },
     { key: 'HONCHO_API_KEY',         label: 'Honcho (memory)',            secret: true  },
+    { key: 'TYPEFULLY_API_KEY',      label: 'Typefully',                  secret: true  },
   ];
 
   return {
@@ -1419,31 +1425,32 @@ function app() {
     tools,
 
     providerMap: {
-      'OpenRouter':           { key: 'OPENROUTER_API_KEY',  modelKey: '_MODEL_OPENROUTER_API_KEY',  placeholder: 'sk-or-...' },
-      'DeepSeek':             { key: 'DEEPSEEK_API_KEY',    modelKey: '_MODEL_DEEPSEEK_API_KEY',    placeholder: 'sk-...'    },
-      'Qwen Cloud':           { key: 'DASHSCOPE_API_KEY',   modelKey: '_MODEL_DASHSCOPE_API_KEY',   placeholder: ''          },
-      'GLM / Z.AI':           { key: 'GLM_API_KEY',         modelKey: '_MODEL_GLM_API_KEY',         placeholder: ''          },
-      'Kimi':                 { key: 'KIMI_API_KEY',         modelKey: '_MODEL_KIMI_API_KEY',        placeholder: ''          },
-      'MiniMax':              { key: 'MINIMAX_API_KEY',      modelKey: '_MODEL_MINIMAX_API_KEY',     placeholder: ''          },
-      'HuggingFace':          { key: 'HF_TOKEN',             modelKey: '_MODEL_HF_TOKEN',            placeholder: 'hf_...'   },
-      'NVIDIA NIM':           { key: 'NVIDIA_API_KEY',       modelKey: '_MODEL_NVIDIA_API_KEY',      placeholder: 'nvapi-...' },
-      'NovitaAI':             { key: 'NOVITA_API_KEY',       modelKey: '_MODEL_NOVITA_API_KEY',      placeholder: ''          },
-      'Arcee AI':             { key: 'ARCEEAI_API_KEY',      modelKey: '_MODEL_ARCEEAI_API_KEY',     placeholder: ''          },
-      'Step Plan':            { key: 'STEPFUN_API_KEY',      modelKey: '_MODEL_STEPFUN_API_KEY',     placeholder: ''          },
-      'Google AI Studio':     { key: 'GEMINI_API_KEY',         modelKey: '_MODEL_GEMINI_API_KEY',         placeholder: 'AIza...'   },
-      'Fireworks AI':         { key: 'FIREWORKS_API_KEY',      modelKey: '_MODEL_FIREWORKS_API_KEY',      placeholder: 'fw_...'    },
-      'Anthropic (Claude)':   { key: 'ANTHROPIC_API_KEY',      modelKey: '_MODEL_ANTHROPIC_API_KEY',      placeholder: 'sk-ant-...' },
-      'xAI':                  { key: 'XAI_API_KEY',             modelKey: '_MODEL_XAI_API_KEY',             placeholder: 'xai-...', keyLabel: 'xAI API Key' },
-      'AWS Bedrock':          { key: 'AWS_ACCESS_KEY_ID',       modelKey: '_MODEL_AWS_ACCESS_KEY_ID',       placeholder: 'AKIA...', isBedrock: true, keyLabel: 'AWS Access Key ID' },
-      'GitHub Copilot':       { key: 'COPILOT_GITHUB_TOKEN',   modelKey: '_MODEL_COPILOT_GITHUB_TOKEN',   placeholder: 'ghp_... or gho_...', keyLabel: 'GitHub Token' },
-      'GMI Cloud':            { key: 'GMI_API_KEY',              modelKey: '_MODEL_GMI_API_KEY',              placeholder: '' },
-      'OpenCode Zen':         { key: 'OPENCODE_ZEN_API_KEY',    modelKey: '_MODEL_OPENCODE_ZEN_API_KEY',    placeholder: '' },
-      'OpenCode Go':          { key: 'OPENCODE_GO_API_KEY',     modelKey: '_MODEL_OPENCODE_GO_API_KEY',     placeholder: '' },
-      'Kilo Code':            { key: 'KILOCODE_API_KEY',         modelKey: '_MODEL_KILOCODE_API_KEY',         placeholder: '' },
-      'Ollama Cloud':         { key: 'OLLAMA_API_KEY',           modelKey: '_MODEL_OLLAMA_API_KEY',           placeholder: '' },
-      'Azure Foundry':        { key: 'AZURE_FOUNDRY_API_KEY',   modelKey: '_MODEL_AZURE_FOUNDRY_API_KEY',   placeholder: '', isAzure: true },
-      'Custom Endpoint':      { key: 'CUSTOM_PROVIDER_API_KEY',modelKey: '_MODEL_CUSTOM_PROVIDER_API_KEY',placeholder: '',         isCustom: true },
-      'xAI Grok (SuperGrok)': { key: null,                     modelKey: '_MODEL_XAI_OAUTH',              isOauth: 'xai' },
+      'OpenAI Codex':         { key: null, providerId: 'openai-codex', modelKey: '_MODEL_OPENAI_CODEX', placeholder: 'gpt-5.4', isOauth: 'codex' },
+      'OpenRouter':           { key: 'OPENROUTER_API_KEY', providerId: 'openrouter', modelKey: '_MODEL_OPENROUTER_API_KEY', placeholder: 'sk-or-...' },
+      'DeepSeek':             { key: 'DEEPSEEK_API_KEY', providerId: 'deepseek', modelKey: '_MODEL_DEEPSEEK_API_KEY', placeholder: 'sk-...' },
+      'Qwen Cloud':           { key: 'DASHSCOPE_API_KEY', providerId: 'alibaba', modelKey: '_MODEL_DASHSCOPE_API_KEY', placeholder: '' },
+      'GLM / Z.AI':           { key: 'GLM_API_KEY', providerId: 'zai', modelKey: '_MODEL_GLM_API_KEY', placeholder: '' },
+      'Kimi':                 { key: 'KIMI_API_KEY', providerId: 'kimi-coding', modelKey: '_MODEL_KIMI_API_KEY', placeholder: '' },
+      'MiniMax':              { key: 'MINIMAX_API_KEY', providerId: 'minimax', modelKey: '_MODEL_MINIMAX_API_KEY', placeholder: '' },
+      'HuggingFace':          { key: 'HF_TOKEN', providerId: 'huggingface', modelKey: '_MODEL_HF_TOKEN', placeholder: 'hf_...' },
+      'NVIDIA NIM':           { key: 'NVIDIA_API_KEY', providerId: 'nvidia', modelKey: '_MODEL_NVIDIA_API_KEY', placeholder: 'nvapi-...' },
+      'NovitaAI':             { key: 'NOVITA_API_KEY', providerId: 'novita', modelKey: '_MODEL_NOVITA_API_KEY', placeholder: '' },
+      'Arcee AI':             { key: 'ARCEEAI_API_KEY', providerId: 'arcee', modelKey: '_MODEL_ARCEEAI_API_KEY', placeholder: '' },
+      'Step Plan':            { key: 'STEPFUN_API_KEY', providerId: 'stepfun', modelKey: '_MODEL_STEPFUN_API_KEY', placeholder: '' },
+      'Google AI Studio':     { key: 'GEMINI_API_KEY', providerId: 'gemini', modelKey: '_MODEL_GEMINI_API_KEY', placeholder: 'AIza...' },
+      'Fireworks AI':         { key: 'FIREWORKS_API_KEY', providerId: 'fireworks', modelKey: '_MODEL_FIREWORKS_API_KEY', placeholder: 'fw_...' },
+      'Anthropic (Claude)':   { key: 'ANTHROPIC_API_KEY', providerId: 'anthropic', modelKey: '_MODEL_ANTHROPIC_API_KEY', placeholder: 'sk-ant-...' },
+      'xAI':                  { key: 'XAI_API_KEY', providerId: 'xai', modelKey: '_MODEL_XAI_API_KEY', placeholder: 'xai-...', keyLabel: 'xAI API Key' },
+      'AWS Bedrock':          { key: 'AWS_ACCESS_KEY_ID', providerId: 'bedrock', modelKey: '_MODEL_AWS_ACCESS_KEY_ID', placeholder: 'AKIA...', isBedrock: true, keyLabel: 'AWS Access Key ID' },
+      'GitHub Copilot':       { key: 'COPILOT_GITHUB_TOKEN', providerId: 'copilot', modelKey: '_MODEL_COPILOT_GITHUB_TOKEN', placeholder: 'ghp_... or gho_...', keyLabel: 'GitHub Token' },
+      'GMI Cloud':            { key: 'GMI_API_KEY', providerId: 'gmi', modelKey: '_MODEL_GMI_API_KEY', placeholder: '' },
+      'OpenCode Zen':         { key: 'OPENCODE_ZEN_API_KEY', providerId: 'opencode-zen', modelKey: '_MODEL_OPENCODE_ZEN_API_KEY', placeholder: '' },
+      'OpenCode Go':          { key: 'OPENCODE_GO_API_KEY', providerId: 'opencode-go', modelKey: '_MODEL_OPENCODE_GO_API_KEY', placeholder: '' },
+      'Kilo Code':            { key: 'KILOCODE_API_KEY', providerId: 'kilocode', modelKey: '_MODEL_KILOCODE_API_KEY', placeholder: '' },
+      'Ollama Cloud':         { key: 'OLLAMA_API_KEY', providerId: 'ollama-cloud', modelKey: '_MODEL_OLLAMA_API_KEY', placeholder: '' },
+      'Azure Foundry':        { key: 'AZURE_FOUNDRY_API_KEY', providerId: 'azure-foundry', modelKey: '_MODEL_AZURE_FOUNDRY_API_KEY', placeholder: '', isAzure: true },
+      'Custom Endpoint':      { key: 'CUSTOM_PROVIDER_API_KEY', providerId: 'custom', modelKey: '_MODEL_CUSTOM_PROVIDER_API_KEY', placeholder: '', isCustom: true },
+      'xAI Grok (SuperGrok)': { key: null, providerId: 'xai-oauth', modelKey: '_MODEL_XAI_OAUTH', isOauth: 'xai' },
     },
 
     xai: { loading: false, userCode: '', verificationUri: '', status: 'none', error: '' },
@@ -1462,7 +1469,11 @@ function app() {
     get configuredProviders() {
       const list = [];
       for (const [name, p] of Object.entries(this.providerMap)) {
-        if (p.isOauth === 'xai') {
+        if (p.isOauth === 'codex') {
+          if (this.vars.HERMES_MODEL_PROVIDER === 'openai-codex') {
+            list.push({ providerKey: name, name, model: this.vars.LLM_MODEL || '', isOauth: true });
+          }
+        } else if (p.isOauth === 'xai') {
           if (this.xai.status === 'authorized') {
             list.push({ providerKey: name, name, model: this.vars['_MODEL_XAI_OAUTH'] || '', isOauth: true });
           }
@@ -1500,6 +1511,10 @@ function app() {
     async removeProvider(providerKey) {
       const p = this.providerMap[providerKey];
       if (!p) return;
+      if (p.isOauth === 'codex') {
+        this.notify('OpenAI Codex is managed by the Railway provider lock.', false);
+        return;
+      }
       if (!confirm(`Remove ${providerKey} provider?`)) return;
       if (p.isOauth === 'xai') {
         await fetch('/setup/api/oauth/xai', { method: 'DELETE' });
@@ -1625,10 +1640,15 @@ function app() {
         const r = await fetch('/setup/api/config', {
           method: 'PUT',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ vars: { ...this.vars }, _restart: this.restartOnSave }),
+          body: JSON.stringify({
+            vars: { ...this.vars },
+            _restart: this.restartOnSave,
+            _active_provider_id: p?.providerId || '',
+          }),
         });
         if (r.ok) {
-          this.notify('Saved', true);
+          const d = await r.json().catch(() => ({}));
+          this.notify(d.warning || 'Saved', !d.warning);
           this.selectedProvider = '';
           await this.loadConfig();
         } else { const e = await r.json().catch(()=>{}); this.notify(e?.error||'Save failed', false); }

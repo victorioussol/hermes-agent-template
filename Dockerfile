@@ -1,8 +1,8 @@
 FROM ghcr.io/astral-sh/uv:python3.12-bookworm-slim
 
-# cache-bust: app-ops-action-inbox-20260708
+# cache-bust: hermes-reliability-20260711
 
-ARG HERMES_REF=v2026.6.19
+ARG HERMES_REF=v2026.7.7.2
 
 RUN apt-get update && \
  apt-get install -y --no-install-recommends curl ca-certificates git tini && \
@@ -20,6 +20,13 @@ RUN git clone --depth 1 --branch ${HERMES_REF} https://github.com/NousResearch/h
  npm install --silent --no-fund --no-audit --progress=false && \
  npm run build && \
  rm -rf /opt/hermes-agent/web /opt/hermes-agent/.git /root/.npm
+
+RUN python -c 'from hermes_cli.config import OPTIONAL_ENV_VARS; print("\n".join(sorted(OPTIONAL_ENV_VARS)))' > /opt/hermes-agent/.optional_env_keys
+
+# Prevent the dashboard from offering an in-container self-update. Railway
+# images must be rebuilt from this pinned source so upgrades remain auditable
+# and rollbacks remain possible.
+RUN printf 'docker\n' > /opt/hermes-agent/.install_method
 
 COPY requirements.txt /app/requirements.txt
 RUN uv pip install --system --no-cache -r /app/requirements.txt
