@@ -8,8 +8,8 @@ main inference route explicit.
 - `HERMES_MODEL_PROVIDER=openai-codex`
 - `LLM_MODEL=gpt-5.4`
 - `ADMIN_PASSWORD` set to a strong value
-- `HERMES_DASHBOARD_IDLE_SECONDS=1200` (default; set `0` only when the native
-  dashboard truly needs to stay resident)
+- `HERMES_DASHBOARD_IDLE_SECONDS=300` in production (the code default is 1200;
+  set `0` only when the native dashboard truly needs to stay resident)
 
 An `OPENROUTER_API_KEY` may remain available for optional models. It must not be
 used for the main `gpt-5.4` route. On each gateway start, the wrapper preserves
@@ -55,4 +55,6 @@ The native dashboard stops after its idle window and restarts on the next
 authenticated dashboard request. The gateway, messaging channels, cron jobs,
 webhooks, Honcho memory, and TTS remain online. Compare 24-hour and 48-hour
 average memory and projected monthly spend after deployment; the target is
-below $13.50/month to leave room under the $15 ceiling.
+below $13.50/month to leave room under the $15 ceiling. The local image smoke
+used 185.3 MiB with the gateway alone and 274.7 MiB with the dashboard open,
+so idling removed about 89 MiB in that controlled test.
