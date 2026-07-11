@@ -20,7 +20,9 @@ endpoints that could override it.
 
 - Never store a literal credential in an MCP URL.
 - Store the Typefully credential as `TYPEFULLY_API_KEY` and configure the MCP
-  URL with `${TYPEFULLY_API_KEY}` interpolation.
+  server at `https://mcp.typefully.com/mcp` with an `Authorization` header set
+  to `Bearer ${TYPEFULLY_API_KEY}`. The v0.18.2 startup migration moves a
+  pre-existing literal URL key into this protected form automatically.
 - Rotate any credential that has previously appeared in the dashboard or logs.
 - The setup API only returns its managed allowlist; unrelated `.env` values are
   preserved server-side and never serialized to the browser.

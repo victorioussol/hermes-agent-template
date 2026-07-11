@@ -127,15 +127,39 @@ class ConfigTests(IsolatedHermesHome):
         (self.home / "config.yaml").write_text(
             "mcp_servers:\n"
             "  typefully:\n"
-            "    url: https://mcp.typefully.com/mcp?TYPEFULLY_API_KEY=${TYPEFULLY_API_KEY}\n"
+            "    url: https://mcp.typefully.com/mcp\n"
+            "    headers:\n"
+            "      Authorization: Bearer ${TYPEFULLY_API_KEY}\n"
         )
         server.write_config_yaml({
             "LLM_MODEL": "gpt-5.4",
             "HERMES_MODEL_PROVIDER": "openai-codex",
         })
         import yaml
-        url = yaml.safe_load((self.home / "config.yaml").read_text())["mcp_servers"]["typefully"]["url"]
-        self.assertEqual(url, "https://mcp.typefully.com/mcp?TYPEFULLY_API_KEY=${TYPEFULLY_API_KEY}")
+        typefully = yaml.safe_load((self.home / "config.yaml").read_text())["mcp_servers"]["typefully"]
+        self.assertEqual(typefully["url"], "https://mcp.typefully.com/mcp")
+        self.assertEqual(typefully["headers"]["Authorization"], "Bearer ${TYPEFULLY_API_KEY}")
+
+    def test_literal_typefully_key_moves_to_private_env_and_bearer_header(self):
+        (self.home / "config.yaml").write_text(
+            "mcp_servers:\n"
+            "  typefully:\n"
+            "    url: https://mcp.typefully.com/mcp?TYPEFULLY_API_KEY=test-typefully-key\n"
+            "    enabled: true\n"
+        )
+        self.assertTrue(server.migrate_typefully_mcp_secret())
+
+        import yaml
+        config = yaml.safe_load((self.home / "config.yaml").read_text())
+        typefully = config["mcp_servers"]["typefully"]
+        self.assertEqual(typefully["url"], "https://mcp.typefully.com/mcp")
+        self.assertEqual(typefully["headers"]["Authorization"], "Bearer ${TYPEFULLY_API_KEY}")
+        self.assertEqual(server.read_env(self.home / ".env")["TYPEFULLY_API_KEY"], "test-typefully-key")
+        self.assertEqual((self.home / ".env").stat().st_mode & 0o777, 0o600)
+        self.assertNotIn("test-typefully-key", (self.home / "config.yaml").read_text())
+        migrated_config = (self.home / "config.yaml").read_text()
+        self.assertFalse(server.migrate_typefully_mcp_secret())
+        self.assertEqual((self.home / "config.yaml").read_text(), migrated_config)
 
     def test_pinned_oauth_provider_is_complete_without_api_key(self):
         (self.home / "config.yaml").write_text(
