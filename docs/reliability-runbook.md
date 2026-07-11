@@ -47,6 +47,18 @@ Confirm all of the following before calling the deployment healthy:
   duplicate Telegram poller, and no gateway crash loop.
 - The Typefully MCP configuration contains a placeholder, not a literal key.
 
+### Guiri App Ops founder filter
+
+- A Guiri Action Inbox item with `audience: victor` is eligible for Hermes
+  analysis only when the enclosing payload explicitly sets
+  `requires_hermes: true`.
+- Routine COO or agent work must not set `requires_hermes`; Hermes is a founder
+  filter, not the work coordinator.
+- A successful handoff must return `202` with `status=accepted`, followed by
+  `agent_started` and `agent_finished` records in
+  `/outbox/app-ops-action-inbox`. HTTP `200` with `status=ignored` means no
+  agent ran and must not be reported as completed processing.
+
 Keep the previous successful Railway deployment available for rollback. If the
 gateway or channels regress, roll back the image first, then restore the three
 backed-up Hermes files only if the upgrade changed their contents.

@@ -340,6 +340,48 @@ class ConfigApiTests(IsolatedHermesHome, unittest.IsolatedAsyncioTestCase):
 
 
 class AppOpsTests(IsolatedHermesHome, unittest.IsolatedAsyncioTestCase):
+    def test_founder_items_are_selected_only_for_explicit_hermes_filtering(self):
+        founder_item = {"audience": "victor", "handled": False, "title": "Founder decision"}
+
+        selected, skipped, _ = server._select_app_ops_items(
+            [founder_item],
+            include_founder_items=True,
+        )
+        self.assertEqual(selected, [founder_item])
+        self.assertEqual(skipped, [])
+
+        selected, skipped, _ = server._select_app_ops_items([founder_item])
+        self.assertEqual(selected, [])
+        self.assertEqual(skipped, [{"index": 0, "reason": "audience_not_hermes"}])
+
+    async def test_explicit_hermes_founder_handoff_queues_agent_run(self):
+        payload = {
+            "source": "app-ops-action-inbox",
+            "generated_at": "2026-07-11T17:47:45.222Z",
+            "requires_victor": True,
+            "requires_hermes": True,
+            "text": "One founder decision",
+            "items": [{"audience": "victor", "handled": False, "title": "Founder decision"}],
+            "handled": [],
+        }
+        req = request(
+            "/ingest/app-ops-action-inbox",
+            method="POST",
+            headers={"x-hermes-action-key": "test-action-key", "x-request-id": "delivery-founder"},
+            body=json.dumps(payload).encode(),
+        )
+        with (
+            patch.dict(os.environ, {"HERMES_ACTION_WEBHOOK_SECRET": "test-action-key"}),
+            patch.object(server, "_schedule_app_ops_run", return_value=None) as schedule,
+        ):
+            response = await server.ingest_app_ops_action_inbox(req)
+
+        self.assertEqual(response.status_code, 202)
+        body = json.loads(response.body)
+        self.assertEqual(body["status"], "accepted")
+        self.assertEqual(body["hermes_item_count"], 1)
+        schedule.assert_called_once()
+
     def test_requires_exact_delivery_matched_result_contract(self):
         valid = (
             'APP_OPS_RESULT {"delivery_id":"delivery-1","handled_count":1,'
