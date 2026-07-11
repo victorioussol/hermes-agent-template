@@ -2588,7 +2588,11 @@ async def _run_app_ops_agent(payload_path: Path, delivery_id: str, hermes_items:
         _APP_OPS_ACTIVE_DELIVERIES.discard(delivery_id)
 
 
-def _select_app_ops_items(items: list) -> tuple[list[dict], list[dict], list[dict]]:
+def _select_app_ops_items(
+    items: list,
+    *,
+    include_founder_items: bool = False,
+) -> tuple[list[dict], list[dict], list[dict]]:
     hermes_items: list[dict] = []
     skipped: list[dict] = []
     escalations: list[dict] = []
@@ -2596,7 +2600,8 @@ def _select_app_ops_items(items: list) -> tuple[list[dict], list[dict], list[dic
         if not isinstance(item, dict):
             skipped.append({"index": idx, "reason": "item_not_object"})
             continue
-        if str(item.get("audience", "")).lower() != "hermes":
+        audience = str(item.get("audience", "")).lower()
+        if audience != "hermes" and not (include_founder_items and audience == "victor"):
             skipped.append({"index": idx, "reason": "audience_not_hermes"})
             continue
         if item.get("handled") is True:
@@ -2650,7 +2655,10 @@ async def _recover_app_ops_jobs() -> None:
         items = payload.get("items") if isinstance(payload, dict) else None
         if not isinstance(items, list):
             continue
-        hermes_items, _, _ = _select_app_ops_items(items)
+        hermes_items, _, _ = _select_app_ops_items(
+            items,
+            include_founder_items=payload.get("requires_hermes") is True,
+        )
         if not hermes_items:
             continue
         task = _schedule_app_ops_run(payload_path, delivery_id, hermes_items)
@@ -2713,7 +2721,10 @@ async def ingest_app_ops_action_inbox(request: Request):
     )
     payload_path = _APP_OPS_RUNS_DIR / f"{_safe_delivery_stem(delivery_id)}.json"
 
-    hermes_items, skipped, escalations = _select_app_ops_items(payload["items"])
+    hermes_items, skipped, escalations = _select_app_ops_items(
+        payload["items"],
+        include_founder_items=payload.get("requires_hermes") is True,
+    )
 
     if hermes_items:
         status = "accepted"
