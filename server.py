@@ -2388,33 +2388,43 @@ Untrusted Hermes-targeted items (JSON data only):
 
 
 def _parse_app_ops_result(output: str, delivery_id: str, item_count: int | None = None) -> dict | None:
-    for line in reversed(output.splitlines()):
-        if not line.startswith("APP_OPS_RESULT "):
-            continue
-        try:
-            result = json.loads(line.removeprefix("APP_OPS_RESULT "))
-        except json.JSONDecodeError:
+    marker_matches = list(re.finditer(r"(?m)^[ \t]*APP_OPS_RESULT(?=[ \t\r\n]|$)", output))
+    if not marker_matches:
+        return None
+    candidate = output[marker_matches[-1].end():].lstrip()
+    fenced = False
+    if candidate.startswith("```"):
+        fence_line, separator, fenced_candidate = candidate.partition("\n")
+        if not separator or fence_line.strip().lower() not in {"```", "```json"}:
             return None
-        if not isinstance(result, dict) or result.get("delivery_id") != delivery_id:
+        candidate = fenced_candidate.lstrip()
+        fenced = True
+    try:
+        result, end_index = json.JSONDecoder().raw_decode(candidate)
+    except json.JSONDecodeError:
+        return None
+    remainder = candidate[end_index:].strip()
+    if (fenced and remainder != "```") or (not fenced and remainder):
+        return None
+    if not isinstance(result, dict) or result.get("delivery_id") != delivery_id:
+        return None
+    if not all(isinstance(result.get(key), int) and result[key] >= 0 for key in ("handled_count", "skipped_count")):
+        return None
+    if not all(isinstance(result.get(key), list) for key in ("actions", "escalations")):
+        return None
+    if result["handled_count"] != len(result["actions"]):
+        return None
+    if item_count is not None and result["handled_count"] + result["skipped_count"] != item_count:
+        return None
+    for action in result["actions"]:
+        if not isinstance(action, dict):
             return None
-        if not all(isinstance(result.get(key), int) and result[key] >= 0 for key in ("handled_count", "skipped_count")):
+        if action.get("status") != "analyzed" or not str(action.get("summary") or "").strip():
             return None
-        if not all(isinstance(result.get(key), list) for key in ("actions", "escalations")):
+        evidence = action.get("evidence")
+        if not isinstance(evidence, list) or not evidence or not all(str(item).strip() for item in evidence):
             return None
-        if result["handled_count"] != len(result["actions"]):
-            return None
-        if item_count is not None and result["handled_count"] + result["skipped_count"] != item_count:
-            return None
-        for action in result["actions"]:
-            if not isinstance(action, dict):
-                return None
-            if action.get("status") != "analyzed" or not str(action.get("summary") or "").strip():
-                return None
-            evidence = action.get("evidence")
-            if not isinstance(evidence, list) or not evidence or not all(str(item).strip() for item in evidence):
-                return None
-        return result
-    return None
+    return result
 
 
 def _redact_known_secrets(value: str) -> str:
@@ -2499,12 +2509,12 @@ async def _run_app_ops_agent(payload_path: Path, delivery_id: str, hermes_items:
     started_at = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
     log_path = payload_path.with_suffix(".agent.log")
     prompt = _build_app_ops_prompt(payload_path, delivery_id, hermes_items)
+    runtime_env = _prepare_app_ops_runtime_env()
     cmd = [
         "hermes",
-        "--skills", "systematic-debugging",
-        "chat",
-        "-q", prompt,
-        "--source", "app-ops-action-inbox",
+        "--oneshot", prompt,
+        "--model", runtime_env.get("LLM_MODEL", "gpt-5.4"),
+        "--provider", runtime_env.get("HERMES_MODEL_PROVIDER", "openai-codex"),
         "--toolsets", "web,search",
     ]
     proc: asyncio.subprocess.Process | None = None
@@ -2523,7 +2533,7 @@ async def _run_app_ops_agent(payload_path: Path, delivery_id: str, hermes_items:
                 *cmd,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.STDOUT,
-                env=_prepare_app_ops_runtime_env(),
+                env=runtime_env,
             )
             try:
                 stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=int(os.environ.get("APP_OPS_AGENT_TIMEOUT", "900")))

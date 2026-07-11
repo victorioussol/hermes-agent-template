@@ -347,10 +347,51 @@ class AppOpsTests(IsolatedHermesHome, unittest.IsolatedAsyncioTestCase):
             '"status":"analyzed","evidence":["source checked"]}],"escalations":[]}'
         )
         self.assertIsNotNone(server._parse_app_ops_result(valid, "delivery-1"))
+        multiline = valid.replace("APP_OPS_RESULT ", "APP_OPS_RESULT\n", 1)
+        self.assertIsNotNone(server._parse_app_ops_result(multiline, "delivery-1", 1))
+        quoted_marker = valid.replace("source checked", "source checked for APP_OPS_RESULT")
+        self.assertIsNotNone(server._parse_app_ops_result(quoted_marker, "delivery-1", 1))
+        fenced = valid.replace("APP_OPS_RESULT ", "APP_OPS_RESULT\n```json\n", 1) + "\n```"
+        self.assertIsNotNone(server._parse_app_ops_result(fenced, "delivery-1", 1))
         self.assertIsNotNone(server._parse_app_ops_result(valid, "delivery-1", 1))
         self.assertIsNone(server._parse_app_ops_result(valid, "delivery-1", 2))
         self.assertIsNone(server._parse_app_ops_result(valid, "delivery-2"))
+        self.assertIsNone(server._parse_app_ops_result(valid + "\ncontradictory trailing prose", "delivery-1"))
         self.assertIsNone(server._parse_app_ops_result("handled_count escalations", "delivery-1"))
+
+    async def test_app_ops_agent_uses_raw_oneshot_output(self):
+        payload_path = server._APP_OPS_RUNS_DIR / "oneshot.json"
+        result = (
+            'APP_OPS_RESULT {"delivery_id":"delivery-oneshot","handled_count":1,'
+            '"skipped_count":0,"actions":[{"summary":"Investigated",'
+            '"status":"analyzed","evidence":["source checked"]}],"escalations":[]}'
+        )
+        process = AsyncMock()
+        process.communicate.return_value = (result.encode(), b"")
+        process.returncode = 0
+        runtime_env = {
+            "PATH": os.environ.get("PATH", ""),
+            "LLM_MODEL": "gpt-5.4",
+            "HERMES_MODEL_PROVIDER": "openai-codex",
+        }
+        with (
+            patch.object(server, "_prepare_app_ops_runtime_env", return_value=runtime_env),
+            patch.object(server.asyncio, "create_subprocess_exec", AsyncMock(return_value=process)) as spawn,
+        ):
+            await server._run_app_ops_agent(
+                payload_path,
+                "delivery-oneshot",
+                [{"title": "Investigate"}],
+            )
+
+        args = spawn.await_args.args
+        self.assertEqual(args[0:2], ("hermes", "--oneshot"))
+        self.assertNotIn("chat", args)
+        self.assertNotIn("-q", args)
+        self.assertEqual(args[-6:], ("--model", "gpt-5.4", "--provider", "openai-codex", "--toolsets", "web,search"))
+        records = [json.loads(line) for line in server._APP_OPS_LOG.read_text().splitlines()]
+        self.assertEqual(records[-1]["status"], "agent_finished")
+        self.assertTrue(records[-1]["semantic_success"])
 
     def test_public_status_omits_raw_output_and_paths(self):
         public = server._public_app_ops_record({
