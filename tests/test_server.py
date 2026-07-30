@@ -201,13 +201,24 @@ class ConfigTests(IsolatedHermesHome):
         with patch.dict(os.environ, {
             "ADMIN_PASSWORD": "admin-secret",
             "RAILWAY_TOKEN": "railway-secret",
+            "RAILWAY_API_TOKEN": "railway-api-secret",
+            "SUPABASE_SERVICE_ROLE_KEY": "supabase-service-secret",
+            "HERMES_COO_WATCHDOG_ENABLED": "true",
             "UNRELATED_SECRET": "unrelated-secret",
             "HERMES_MODEL_PROVIDER": "openai-codex",
         }):
             env = server.build_hermes_env()
         self.assertEqual(env["HERMES_MODEL_PROVIDER"], "openai-codex")
         self.assertEqual(env["TAVILY_API_KEY"], "search-key")
-        for key in ("ADMIN_PASSWORD", "RAILWAY_TOKEN", "UNRELATED_SECRET", "HERMES_ACTION_WEBHOOK_SECRET"):
+        for key in (
+            "ADMIN_PASSWORD",
+            "RAILWAY_TOKEN",
+            "RAILWAY_API_TOKEN",
+            "SUPABASE_SERVICE_ROLE_KEY",
+            "HERMES_COO_WATCHDOG_ENABLED",
+            "UNRELATED_SECRET",
+            "HERMES_ACTION_WEBHOOK_SECRET",
+        ):
             self.assertNotIn(key, env)
 
     def test_railway_only_official_voice_and_idle_settings_propagate(self):
@@ -588,6 +599,57 @@ class LifecycleTests(unittest.IsolatedAsyncioTestCase):
         finally:
             server.gw.state = original_state
         self.assertEqual(response.status_code, 503)
+
+    async def test_enabled_misconfigured_watchdog_is_not_railway_ready(self):
+        class MisconfiguredWatchdog:
+            @staticmethod
+            def public_status():
+                return {
+                    "enabled": True,
+                    "configured": False,
+                    "last_outcome": "misconfigured",
+                }
+
+        original_state = server.gw.state
+        original_watchdog = server._coo_watchdog
+        server.gw.state = "running"
+        server._coo_watchdog = MisconfiguredWatchdog()
+        try:
+            with patch("server.is_config_complete", return_value=True):
+                response = await server.route_health(request("/health"))
+        finally:
+            server.gw.state = original_state
+            server._coo_watchdog = original_watchdog
+        self.assertEqual(response.status_code, 503)
+
+    async def test_stopped_watchdog_task_is_not_railway_ready(self):
+        class ConfiguredWatchdog:
+            @staticmethod
+            def public_status():
+                return {
+                    "enabled": True,
+                    "configured": True,
+                    "last_outcome": "healthy",
+                }
+
+        completed_task = asyncio.create_task(asyncio.sleep(0))
+        await completed_task
+        original_state = server.gw.state
+        original_watchdog = server._coo_watchdog
+        original_task = server._coo_watchdog_task
+        server.gw.state = "running"
+        server._coo_watchdog = ConfiguredWatchdog()
+        server._coo_watchdog_task = completed_task
+        try:
+            with patch("server.is_config_complete", return_value=True):
+                response = await server.route_health(request("/health"))
+        finally:
+            server.gw.state = original_state
+            server._coo_watchdog = original_watchdog
+            server._coo_watchdog_task = original_task
+        self.assertEqual(response.status_code, 503)
+        payload = json.loads(response.body)
+        self.assertFalse(payload["coo_watchdog"]["task_running"])
 
 
 if __name__ == "__main__":

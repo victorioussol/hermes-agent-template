@@ -34,6 +34,7 @@ RUN uv pip install --system --no-cache -r /app/requirements.txt
 RUN mkdir -p /data/.hermes
 
 COPY server.py /app/server.py
+COPY coo_watchdog.py /app/coo_watchdog.py
 COPY templates/ /app/templates/
 COPY start.sh /app/start.sh
 COPY career_outbox_append.py /app/career_outbox_append.py
