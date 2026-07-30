@@ -59,6 +59,36 @@ Confirm all of the following before calling the deployment healthy:
   `/outbox/app-ops-action-inbox`. HTTP `200` with `status=ignored` means no
   agent ran and must not be reported as completed processing.
 
+### Guiri COO failover
+
+Hermes runs a deterministic wrapper watchdog when
+`HERMES_COO_WATCHDOG_ENABLED=true`. This recovery code is outside the model:
+the Hermes agent never receives the Railway or Supabase service credentials.
+
+Required protected variables:
+
+- `RAILWAY_API_TOKEN`
+- `SUPABASE_URL`
+- `SUPABASE_SERVICE_ROLE_KEY`
+
+The target is hard-coded to the Guiri Ops Control Plane project, production
+environment, and `guiri-ops-hub-cron` service. Environment variables cannot
+redirect recovery to another Railway service.
+
+The watchdog checks every 15 minutes by default. A fresh COO database heartbeat
+means healthy. A stale heartbeat with a recent Railway run means the scheduler
+is alive and Hermes does not restart it. Only a stale heartbeat plus stale
+Railway activity starts recovery. Hermes redeploys the latest exact deployment,
+waits for a newer database heartbeat, and allows at most two attempts per
+rolling 24 hours with a 60-minute cooldown.
+
+Successful recovery is silent. Hermes asks for founder attention only after the
+safe recovery path is exhausted or no valid COO heartbeat has existed for 24
+hours. Material attempts and verification results are appended locally under
+`$HERMES_HOME/app-ops-action-inbox/coo-watchdog.jsonl` and written
+idempotently to `ops_learning_events`. A temporary Supabase failure leaves the
+local receipt queued for a later sync.
+
 Keep the previous successful Railway deployment available for rollback. If the
 gateway or channels regress, roll back the image first, then restore the three
 backed-up Hermes files only if the upgrade changed their contents.

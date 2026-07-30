@@ -46,6 +46,7 @@ from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 import httpx
 import websockets
 import websockets.exceptions
+from coo_watchdog import CooWatchdog, WatchdogConfig
 from starlette.applications import Starlette
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
@@ -193,6 +194,15 @@ WRAPPER_ONLY_ENV_KEYS = {
     "HERMES_AUTH_JSON_BOOTSTRAP",
     "RAILWAY_TOKEN",
     "RAILWAY_API_TOKEN",
+    "SUPABASE_SERVICE_ROLE_KEY",
+    "HERMES_COO_WATCHDOG_ENABLED",
+    "HERMES_COO_WATCHDOG_INTERVAL_SECONDS",
+    "HERMES_COO_STALE_MINUTES",
+    "HERMES_COO_NO_CONTACT_MINUTES",
+    "HERMES_COO_RECOVERY_COOLDOWN_MINUTES",
+    "HERMES_COO_MAX_RECOVERY_ATTEMPTS",
+    "HERMES_COO_VERIFY_TIMEOUT_SECONDS",
+    "HERMES_COO_VERIFY_POLL_SECONDS",
 }
 HERMES_BASE_ENV_KEYS = {
     "PATH", "HOME", "LANG", "LC_ALL", "TZ", "TERM", "TMPDIR",
@@ -1395,6 +1405,8 @@ dash = Dashboard()
 # Shared async HTTP client for the reverse proxy. Created lazily so we pick up
 # the running event loop, torn down in lifespan.
 _http_client: httpx.AsyncClient | None = None
+_coo_watchdog: CooWatchdog | None = None
+_coo_watchdog_task: asyncio.Task | None = None
 
 
 def get_http_client() -> httpx.AsyncClient:
@@ -1415,13 +1427,33 @@ async def page_index(request: Request):
 
 async def route_health(request: Request):
     configured = is_config_complete()
+    watchdog_status = dict(
+        _coo_watchdog.public_status()
+        if _coo_watchdog is not None
+        else {"enabled": False, "configured": True, "last_outcome": "not_started"}
+    )
+    watchdog_task_running = bool(
+        _coo_watchdog_task is not None
+        and not _coo_watchdog_task.done()
+    )
+    watchdog_status["task_running"] = watchdog_task_running
+    watchdog_healthy = (
+        watchdog_status.get("enabled") is not True
+        or (
+            watchdog_status.get("configured") is True
+            and watchdog_task_running
+        )
+    )
     require_configured = (
         os.environ.get("HERMES_REQUIRE_CONFIGURED", "").lower() in ("true", "1", "yes")
         or bool(os.environ.get("RAILWAY_ENVIRONMENT") or os.environ.get("RAILWAY_ENVIRONMENT_ID"))
     )
     healthy = (
-        (configured and gw.state == "running")
-        or (not configured and not require_configured)
+        (
+            (configured and gw.state == "running")
+            or (not configured and not require_configured)
+        )
+        and watchdog_healthy
     )
     return JSONResponse(
         {
@@ -1429,6 +1461,7 @@ async def route_health(request: Request):
             "configured": configured,
             "gateway": gw.state,
             "dashboard": dash.status()["state"],
+            "coo_watchdog": watchdog_status,
         },
         status_code=200 if healthy else 503,
     )
@@ -1818,6 +1851,28 @@ async def auto_start():
         print("[server] Config incomplete — gateway not started. Configure provider + model in the admin UI.", flush=True)
 
 
+async def _start_coo_watchdog() -> None:
+    global _coo_watchdog, _coo_watchdog_task
+    config = WatchdogConfig.from_env()
+    _coo_watchdog = CooWatchdog(config)
+    if config.enabled:
+        _coo_watchdog_task = asyncio.create_task(
+            _coo_watchdog.run_forever(),
+            name="hermes-coo-watchdog",
+        )
+
+
+async def _stop_coo_watchdog() -> None:
+    global _coo_watchdog, _coo_watchdog_task
+    if _coo_watchdog_task is not None:
+        _coo_watchdog_task.cancel()
+        await asyncio.gather(_coo_watchdog_task, return_exceptions=True)
+        _coo_watchdog_task = None
+    elif _coo_watchdog is not None:
+        await _coo_watchdog.close()
+    _coo_watchdog = None
+
+
 @asynccontextmanager
 async def lifespan(app):
     # The native dashboard is started lazily by authenticated proxy requests.
@@ -1827,9 +1882,11 @@ async def lifespan(app):
         migrate_typefully_mcp_secret()
     await auto_start()
     await _recover_app_ops_jobs()
+    await _start_coo_watchdog()
     try:
         yield
     finally:
+        await _stop_coo_watchdog()
         await _drain_app_ops_tasks()
         await asyncio.gather(
             gw.stop(),
