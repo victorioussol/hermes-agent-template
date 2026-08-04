@@ -2619,7 +2619,7 @@ async def _run_app_ops_agent(payload_path: Path, delivery_id: str, hermes_items:
     cmd = [
         "hermes",
         "--oneshot", prompt,
-        "--model", runtime_env.get("LLM_MODEL", "gpt-5.4"),
+        "--model", runtime_env.get("LLM_MODEL", "gpt-5.6-terra"),
         "--provider", runtime_env.get("HERMES_MODEL_PROVIDER", "openai-codex"),
         "--toolsets", "web,search",
     ]

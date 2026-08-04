@@ -871,7 +871,7 @@
                      : selectedProvider === 'Anthropic (Claude)' ? 'e.g. claude-sonnet-4-20250514'
                      : selectedProvider === 'AWS Bedrock' ? 'e.g. anthropic.claude-3-5-sonnet-20241022-v2:0'
                    : selectedProvider === 'Fireworks AI' ? 'e.g. accounts/fireworks/models/llama-v3p1-70b-instruct'
-                     : selectedProvider === 'OpenAI Codex' ? 'gpt-5.4'
+                     : selectedProvider === 'OpenAI Codex' ? 'gpt-5.6-terra'
                      : selectedProvider === 'Custom Endpoint' || selectedProvider === 'Azure Foundry' ? 'model-id as required by the endpoint'
                      : 'e.g. openai/gpt-4o-mini  or  deepseek/deepseek-chat'">
             <p class="hint" x-show="selectedProvider === 'OpenAI Codex'">Uses the Codex credential already connected in the Hermes Dashboard. The Railway provider lock remains authoritative.</p>
@@ -1425,7 +1425,7 @@ function app() {
     tools,
 
     providerMap: {
-      'OpenAI Codex':         { key: null, providerId: 'openai-codex', modelKey: '_MODEL_OPENAI_CODEX', placeholder: 'gpt-5.4', isOauth: 'codex' },
+      'OpenAI Codex':         { key: null, providerId: 'openai-codex', modelKey: '_MODEL_OPENAI_CODEX', placeholder: 'gpt-5.6-terra', isOauth: 'codex' },
       'OpenRouter':           { key: 'OPENROUTER_API_KEY', providerId: 'openrouter', modelKey: '_MODEL_OPENROUTER_API_KEY', placeholder: 'sk-or-...' },
       'DeepSeek':             { key: 'DEEPSEEK_API_KEY', providerId: 'deepseek', modelKey: '_MODEL_DEEPSEEK_API_KEY', placeholder: 'sk-...' },
       'Qwen Cloud':           { key: 'DASHSCOPE_API_KEY', providerId: 'alibaba', modelKey: '_MODEL_DASHSCOPE_API_KEY', placeholder: '' },

@@ -11,17 +11,20 @@ main inference route explicit.
 - `HERMES_DASHBOARD_IDLE_SECONDS=300` in production (the code default is 1200;
   set `0` only when the native dashboard truly needs to stay resident)
 
-An `OPENROUTER_API_KEY` may remain available for deliberate, manual use. It is
-not an automatic main-model fallback and must not be used for background helper
-work. Hermes v0.20 managed scope pins the effective routes even if stale values
-remain in the editable dashboard config:
+An `OPENROUTER_API_KEY` may remain available only after that exact key reports a
+USD 5 limit with a monthly reset. Hermes v0.20 managed scope pins the effective
+routes even if stale values remain in the editable dashboard config:
 
 - Main reasoning: `openai-codex / gpt-5.6-terra`, medium effort from the user config.
-- Delegated subagents: `openai-codex / gpt-5.4-mini`, low effort, at most two at once.
-- Auxiliary tasks: `openai-codex / gpt-5.4-mini`, except approval checks on `gpt-5.4`.
-- Mixture-of-Agents: manual only, all OpenAI Codex models, 2,048-token synthesis cap.
-- Automatic OpenRouter fallback: disabled until the OpenRouter key has a hard
-  provider-side monthly spending limit approved by the owner.
+- Automatic main fallback: `openrouter / deepseek/deepseek-v4-flash`.
+- Delegated subagents: DeepSeek V4 Flash at high effort, at most two at once,
+  one level deep, and no more than 20 iterations.
+- Fast text helpers: DeepSeek V4 Flash without reasoning overhead.
+- Planning, triage, curation, and MCP helpers: DeepSeek V4 Flash at high effort.
+- Vision: `openai-codex / gpt-5.6-terra`; approval checks:
+  `openai-codex / gpt-5.6-sol`.
+- Mixture-of-Agents: manual only, Flash plus Terra references, Sol synthesis,
+  and a 1,536-token synthesis cap.
 
 ## Secrets
 
@@ -38,9 +41,11 @@ remain in the editable dashboard config:
 
 1. Confirm startup created the private, one-time pre-upgrade backup under
    `/data/.hermes/backups/pre-v2026.8.3` without printing its contents.
-2. Confirm the branch contains the currently deployed App Ops changes.
-3. Run the unit suite and build the Docker image.
-4. Verify the image reports Hermes `v0.20.0 (2026.8.3)`, Claude Code `2.1.221`,
+2. Read back the exact OpenRouter key metadata and require `limit=5` plus
+   `limit_reset=monthly`. Do not deploy the managed fallback before both match.
+3. Confirm the branch contains the currently deployed App Ops changes.
+4. Run the unit suite and build the Docker image.
+5. Verify the image reports Hermes `v0.20.0 (2026.8.3)`, Claude Code `2.1.221`,
    and SQLite `3.53.4` or newer.
 
 ## After deployment
@@ -50,8 +55,11 @@ Confirm all of the following before calling the deployment healthy:
 - Health reports the gateway running.
 - Main model is `gpt-5.6-terra` and provider is `openai-codex`.
 - A normal Telegram message and Discord probe both complete exactly once.
-- One fresh main-model request and one scheduled-job canary complete through
-  OpenAI Codex OAuth. Neither may touch OpenRouter.
+- One fresh main-model request completes through OpenAI Codex OAuth.
+- One bounded DeepSeek V4 Flash auxiliary call completes through OpenRouter,
+  and the key still reports a USD 5 monthly limit afterwards.
+- One model-backed scheduled-job canary and one script-only watchdog canary
+  complete. Verify the expected provider for the model-backed job.
 - Logs contain no raw session token, no repeated Raft dependency warning, no
   duplicate Telegram poller, and no gateway crash loop.
 - The Typefully MCP configuration contains a placeholder, not a literal key.
