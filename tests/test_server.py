@@ -108,20 +108,20 @@ class ConfigTests(IsolatedHermesHome):
         )
         with patch.dict(os.environ, {"HERMES_MODEL_PROVIDER": ""}):
             server.write_config_yaml({
-                "LLM_MODEL": "gpt-5.4",
+                "LLM_MODEL": "gpt-5.6-terra",
                 "OPENROUTER_API_KEY": "openrouter-key",
             })
 
         import yaml
         model = yaml.safe_load((self.home / "config.yaml").read_text())["model"]
         self.assertEqual(model["provider"], "openai-codex")
-        self.assertEqual(model["default"], "gpt-5.4")
+        self.assertEqual(model["default"], "gpt-5.6-terra")
         self.assertNotIn("base_url", model)
         self.assertNotIn("api_key", model)
 
     def test_explicit_provider_override_wins(self):
         server.write_config_yaml({
-            "LLM_MODEL": "gpt-5.4",
+            "LLM_MODEL": "gpt-5.6-terra",
             "HERMES_MODEL_PROVIDER": "openai-codex",
             "OPENROUTER_API_KEY": "openrouter-key",
         })
@@ -132,7 +132,7 @@ class ConfigTests(IsolatedHermesHome):
     def test_railway_provider_and_model_override_persisted_values(self):
         with patch.dict(os.environ, {
             "HERMES_MODEL_PROVIDER": "openai-codex",
-            "LLM_MODEL": "gpt-5.4",
+            "LLM_MODEL": "gpt-5.6-terra",
         }):
             server.write_config_yaml({
                 "LLM_MODEL": "openrouter/other-model",
@@ -141,7 +141,7 @@ class ConfigTests(IsolatedHermesHome):
             })
         import yaml
         model = yaml.safe_load((self.home / "config.yaml").read_text())["model"]
-        self.assertEqual(model, {"default": "gpt-5.4", "provider": "openai-codex"})
+        self.assertEqual(model, {"default": "gpt-5.6-terra", "provider": "openai-codex"})
 
     def test_new_config_defaults_to_auto_without_explicit_provider(self):
         with patch.dict(os.environ, {"HERMES_MODEL_PROVIDER": ""}):
@@ -153,65 +153,70 @@ class ConfigTests(IsolatedHermesHome):
         model = yaml.safe_load((self.home / "config.yaml").read_text())["model"]
         self.assertEqual(model["provider"], "auto")
 
-    def test_mcp_placeholder_survives_config_merge(self):
+    def test_non_retired_mcp_server_survives_config_merge(self):
         (self.home / "config.yaml").write_text(
             "mcp_servers:\n"
-            "  typefully:\n"
-            "    url: https://mcp.typefully.com/mcp\n"
-            "    headers:\n"
-            "      Authorization: Bearer ${TYPEFULLY_API_KEY}\n"
+            "  example-search:\n"
+            "    url: https://mcp.example.com/search\n"
         )
         server.write_config_yaml({
-            "LLM_MODEL": "gpt-5.4",
+            "LLM_MODEL": "gpt-5.6-terra",
             "HERMES_MODEL_PROVIDER": "openai-codex",
         })
         import yaml
-        typefully = yaml.safe_load((self.home / "config.yaml").read_text())["mcp_servers"]["typefully"]
-        self.assertEqual(typefully["url"], "https://mcp.typefully.com/mcp")
-        self.assertEqual(typefully["headers"]["Authorization"], "Bearer ${TYPEFULLY_API_KEY}")
+        server_config = yaml.safe_load((self.home / "config.yaml").read_text())["mcp_servers"]["example-search"]
+        self.assertEqual(server_config["url"], "https://mcp.example.com/search")
 
-    def test_literal_typefully_key_moves_to_private_env_and_bearer_header(self):
+    def test_retired_typefully_server_and_secret_are_removed(self):
         (self.home / "config.yaml").write_text(
             "mcp_servers:\n"
             "  typefully:\n"
             "    url: https://mcp.typefully.com/mcp?TYPEFULLY_API_KEY=test-typefully-key\n"
-            "    enabled: true\n"
+            "  example-search:\n"
+            "    url: https://mcp.example.com/search\n"
         )
-        self.assertTrue(server.migrate_typefully_mcp_secret())
+        server.write_env(self.home / ".env", {
+            "TYPEFULLY_API_KEY": "test-typefully-key",
+            "TAVILY_API_KEY": "keep-this-key",
+        })
+        self.assertTrue(server.remove_typefully_configuration())
 
         import yaml
         config = yaml.safe_load((self.home / "config.yaml").read_text())
-        typefully = config["mcp_servers"]["typefully"]
-        self.assertEqual(typefully["url"], "https://mcp.typefully.com/mcp")
-        self.assertEqual(typefully["headers"]["Authorization"], "Bearer ${TYPEFULLY_API_KEY}")
-        self.assertEqual(server.read_env(self.home / ".env")["TYPEFULLY_API_KEY"], "test-typefully-key")
+        self.assertNotIn("typefully", config["mcp_servers"])
+        self.assertIn("example-search", config["mcp_servers"])
+        env = server.read_env(self.home / ".env")
+        self.assertNotIn("TYPEFULLY_API_KEY", env)
+        self.assertEqual(env["TAVILY_API_KEY"], "keep-this-key")
         self.assertEqual((self.home / ".env").stat().st_mode & 0o777, 0o600)
         self.assertNotIn("test-typefully-key", (self.home / "config.yaml").read_text())
-        migrated_config = (self.home / "config.yaml").read_text()
-        self.assertFalse(server.migrate_typefully_mcp_secret())
-        self.assertEqual((self.home / "config.yaml").read_text(), migrated_config)
+        cleaned_config = (self.home / "config.yaml").read_text()
+        self.assertFalse(server.remove_typefully_configuration())
+        self.assertEqual((self.home / "config.yaml").read_text(), cleaned_config)
+        with patch.dict(os.environ, {"TYPEFULLY_API_KEY": "railway-secret"}):
+            self.assertNotIn("TYPEFULLY_API_KEY", server.build_hermes_env())
 
     def test_pinned_oauth_provider_is_complete_without_api_key(self):
         (self.home / "config.yaml").write_text(
-            "model:\n  default: gpt-5.4\n  provider: openai-codex\n"
+            "model:\n  default: gpt-5.6-terra\n  provider: openai-codex\n"
         )
-        self.assertTrue(server.is_config_complete({"LLM_MODEL": "gpt-5.4"}))
+        self.assertTrue(server.is_config_complete({"LLM_MODEL": "gpt-5.6-terra"}))
 
     def test_unknown_secret_names_are_masked_and_hidden(self):
         raw = {
-            "LLM_MODEL": "gpt-5.4",
+            "LLM_MODEL": "gpt-5.6-terra",
             "CAREER_OPS_WEBHOOK_SECRET": "career-secret-value",
             "HERMES_ACTION_KEY": "action-secret-value",
         }
         masked = server.mask(raw)
         self.assertEqual(masked["CAREER_OPS_WEBHOOK_SECRET"], "***")
         self.assertEqual(masked["HERMES_ACTION_KEY"], "***")
-        self.assertEqual(server.visible_config(raw), {"LLM_MODEL": "gpt-5.4"})
+        self.assertEqual(server.visible_config(raw), {"LLM_MODEL": "gpt-5.6-terra"})
 
     def test_env_writer_rejects_newlines_and_sets_private_mode(self):
         with self.assertRaises(ValueError):
-            server.write_env(self.home / ".env", {"LLM_MODEL": "gpt-5.4\nINJECTED=true"})
-        server.write_env(self.home / ".env", {"LLM_MODEL": "gpt-5.4"})
+            server.write_env(self.home / ".env", {"LLM_MODEL": "gpt-5.6-terra\nINJECTED=true"})
+        server.write_env(self.home / ".env", {"LLM_MODEL": "gpt-5.6-terra"})
         self.assertEqual((self.home / ".env").stat().st_mode & 0o777, 0o600)
 
     def test_invalid_yaml_is_never_overwritten(self):
@@ -219,12 +224,12 @@ class ConfigTests(IsolatedHermesHome):
         invalid = "model: [unterminated\n"
         config_path.write_text(invalid)
         with self.assertRaises(RuntimeError):
-            server.write_config_yaml({"LLM_MODEL": "gpt-5.4"})
+            server.write_config_yaml({"LLM_MODEL": "gpt-5.6-terra"})
         self.assertEqual(config_path.read_text(), invalid)
 
     def test_hermes_environment_excludes_wrapper_and_railway_secrets(self):
         server.write_env(self.home / ".env", {
-            "LLM_MODEL": "gpt-5.4",
+            "LLM_MODEL": "gpt-5.6-terra",
             "HERMES_ACTION_WEBHOOK_SECRET": "persisted-webhook-secret",
             "TAVILY_API_KEY": "search-key",
         })
@@ -271,25 +276,25 @@ class ConfigTests(IsolatedHermesHome):
         self.assertNotIn("UNRELATED_RAILWAY_SECRET", env)
         self.assertEqual(dashboard.idle_seconds, 0)
 
-    def test_app_ops_environment_excludes_channel_and_publishing_credentials(self):
+    def test_app_ops_environment_excludes_channel_and_unapproved_credentials(self):
         server.write_env(self.home / ".env", {
-            "LLM_MODEL": "gpt-5.4",
+            "LLM_MODEL": "gpt-5.6-terra",
             "HERMES_MODEL_PROVIDER": "openai-codex",
             "TELEGRAM_BOT_TOKEN": "telegram-secret",
-            "TYPEFULLY_API_KEY": "publishing-secret",
+            "SOCIAL_MEDIA_API_KEY": "publishing-secret",
             "TAVILY_API_KEY": "search-key",
         })
         env = server.build_app_ops_env()
         self.assertEqual(env["TAVILY_API_KEY"], "search-key")
         self.assertNotIn("TELEGRAM_BOT_TOKEN", env)
-        self.assertNotIn("TYPEFULLY_API_KEY", env)
+        self.assertNotIn("SOCIAL_MEDIA_API_KEY", env)
 
     def test_app_ops_profile_persists_only_read_only_worker_settings(self):
         server.write_env(self.home / ".env", {
-            "LLM_MODEL": "gpt-5.4",
+            "LLM_MODEL": "gpt-5.6-terra",
             "HERMES_MODEL_PROVIDER": "openai-codex",
             "TELEGRAM_BOT_TOKEN": "telegram-secret",
-            "TYPEFULLY_API_KEY": "publishing-secret",
+            "SOCIAL_MEDIA_API_KEY": "publishing-secret",
             "TAVILY_API_KEY": "search-key",
         })
         env = server._prepare_app_ops_runtime_env()
@@ -297,7 +302,7 @@ class ConfigTests(IsolatedHermesHome):
         profile_env = server.read_env(profile_home / ".env")
         self.assertEqual(profile_env["TAVILY_API_KEY"], "search-key")
         self.assertNotIn("TELEGRAM_BOT_TOKEN", profile_env)
-        self.assertNotIn("TYPEFULLY_API_KEY", profile_env)
+        self.assertNotIn("SOCIAL_MEDIA_API_KEY", profile_env)
 
 
 class SecurityTests(unittest.TestCase):
@@ -312,11 +317,11 @@ class SecurityTests(unittest.TestCase):
     def test_redacts_query_json_and_bearer_secrets(self):
         raw = (
             "GET /api/pty?token=session-secret&channel=1 "
-            "TYPEFULLY_API_KEY=typefully-secret "
+            "SOCIAL_MEDIA_API_KEY=publishing-secret "
             '"access_token":"oauth-secret" Authorization: Bearer bearer-secret'
         )
         clean = server.redact_sensitive_text(raw)
-        for secret in ("session-secret", "typefully-secret", "oauth-secret", "bearer-secret"):
+        for secret in ("session-secret", "publishing-secret", "oauth-secret", "bearer-secret"):
             self.assertNotIn(secret, clean)
 
     def test_uvicorn_access_log_is_disabled(self):
@@ -346,7 +351,7 @@ class SecurityTests(unittest.TestCase):
 class ConfigApiTests(IsolatedHermesHome, unittest.IsolatedAsyncioTestCase):
     async def test_auxiliary_provider_save_cannot_replace_railway_codex_pin(self):
         server.write_env(server.ENV_FILE, {
-            "LLM_MODEL": "gpt-5.4",
+            "LLM_MODEL": "gpt-5.6-terra",
             "HERMES_MODEL_PROVIDER": "openrouter",
         })
         token = server._make_auth_token()
@@ -371,14 +376,14 @@ class ConfigApiTests(IsolatedHermesHome, unittest.IsolatedAsyncioTestCase):
         )
         with patch.dict(os.environ, {
             "HERMES_MODEL_PROVIDER": "openai-codex",
-            "LLM_MODEL": "gpt-5.4",
+            "LLM_MODEL": "gpt-5.6-terra",
         }):
             response = await server.api_config_put(req)
         self.assertEqual(response.status_code, 200)
         self.assertIn("main provider remains pinned", json.loads(response.body)["warning"])
         persisted = server.read_env(server.ENV_FILE)
         self.assertEqual(persisted["HERMES_MODEL_PROVIDER"], "openai-codex")
-        self.assertEqual(persisted["LLM_MODEL"], "gpt-5.4")
+        self.assertEqual(persisted["LLM_MODEL"], "gpt-5.6-terra")
         self.assertEqual(persisted["OPENROUTER_API_KEY"], "openrouter-key")
 
 
@@ -456,7 +461,7 @@ class AppOpsTests(IsolatedHermesHome, unittest.IsolatedAsyncioTestCase):
         process.returncode = 0
         runtime_env = {
             "PATH": os.environ.get("PATH", ""),
-            "LLM_MODEL": "gpt-5.4",
+            "LLM_MODEL": "gpt-5.6-terra",
             "HERMES_MODEL_PROVIDER": "openai-codex",
         }
         with (
@@ -473,7 +478,7 @@ class AppOpsTests(IsolatedHermesHome, unittest.IsolatedAsyncioTestCase):
         self.assertEqual(args[0:2], ("hermes", "--oneshot"))
         self.assertNotIn("chat", args)
         self.assertNotIn("-q", args)
-        self.assertEqual(args[-6:], ("--model", "gpt-5.4", "--provider", "openai-codex", "--toolsets", "web,search"))
+        self.assertEqual(args[-6:], ("--model", "gpt-5.6-terra", "--provider", "openai-codex", "--toolsets", "web,search"))
         records = [json.loads(line) for line in server._APP_OPS_LOG.read_text().splitlines()]
         self.assertEqual(records[-1]["status"], "agent_finished")
         self.assertTrue(records[-1]["semantic_success"])
@@ -613,7 +618,7 @@ class LifecycleTests(unittest.IsolatedAsyncioTestCase):
             patch("server.asyncio.create_subprocess_exec", spawn),
             patch("server.write_config_yaml"),
             patch.dict(os.environ, {
-                "LLM_MODEL": "gpt-5.4",
+                "LLM_MODEL": "gpt-5.6-terra",
                 "HERMES_MODEL_PROVIDER": "openai-codex",
             }),
         ):

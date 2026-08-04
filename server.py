@@ -41,7 +41,6 @@ from collections import deque
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
-from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 import httpx
 import websockets
@@ -153,7 +152,6 @@ ENV_VARS = [
     ("VOICE_TOOLS_OPENAI_KEY",   "OpenAI (voice/TTS)",       "tool",      True),
     ("ELEVENLABS_API_KEY",       "ElevenLabs voice",         "tool",      True),
     ("HONCHO_API_KEY",           "Honcho (memory)",          "tool",      True),
-    ("TYPEFULLY_API_KEY",        "Typefully",                "tool",      True),
     ("TELEGRAM_BOT_TOKEN",       "Bot Token",                "telegram",  True),
     ("TELEGRAM_ALLOWED_USERS",   "Allowed User IDs",         "telegram",  False),
     ("DISCORD_BOT_TOKEN",        "Bot Token",                "discord",   True),
@@ -426,84 +424,47 @@ def write_env(path: Path, data: dict[str, str]) -> None:
     _atomic_write_text(path, "\n".join(lines))
 
 
-def migrate_typefully_mcp_secret() -> bool:
-    """Move a literal Typefully MCP key from config.yaml into protected .env."""
+def remove_typefully_configuration() -> bool:
+    """Remove the retired Typefully MCP entry and any persisted credential."""
     import yaml
 
     config_path = Path(HERMES_HOME) / "config.yaml"
-    if not config_path.exists():
-        return False
-    try:
-        loaded = yaml.safe_load(config_path.read_text())
-    except (OSError, yaml.YAMLError) as exc:
-        raise RuntimeError("Cannot safely migrate Typefully configuration") from exc
-    if not isinstance(loaded, dict) or not isinstance(loaded.get("mcp_servers"), dict):
-        return False
-
     env_data = read_env(ENV_FILE)
-    changed = False
-    for name, entry in loaded["mcp_servers"].items():
-        if not isinstance(entry, dict):
-            continue
-        url = str(entry.get("url") or "")
-        if "typefully" not in str(name).lower() and "typefully.com" not in url.lower():
-            continue
-        if not url:
-            url = "https://mcp.typefully.com/mcp"
+    env_changed = env_data.pop("TYPEFULLY_API_KEY", None) is not None
+    config_changed = False
+    loaded: dict = {}
+    if config_path.exists():
+        try:
+            parsed = yaml.safe_load(config_path.read_text())
+        except (OSError, yaml.YAMLError) as exc:
+            raise RuntimeError("Cannot safely remove retired Typefully configuration") from exc
+        loaded = parsed if isinstance(parsed, dict) else {}
+        servers = loaded.get("mcp_servers")
+        if isinstance(servers, dict):
+            retired = [
+                name for name, entry in servers.items()
+                if "typefully" in str(name).lower()
+                or (
+                    isinstance(entry, dict)
+                    and "typefully.com" in str(entry.get("url") or "").lower()
+                )
+            ]
+            for name in retired:
+                servers.pop(name, None)
+            config_changed = bool(retired)
+            if not servers:
+                loaded.pop("mcp_servers", None)
 
-        parsed = urlsplit(url)
-        kept_query: list[tuple[str, str]] = []
-        discovered_secret = ""
-        for key, value in parse_qsl(parsed.query, keep_blank_values=True):
-            if key.lower() in {"typefully_api_key", "api_key", "apikey"}:
-                if value and "${" not in value:
-                    discovered_secret = value
-                continue
-            kept_query.append((key, value))
-
-        headers = dict(entry.get("headers") if isinstance(entry.get("headers"), dict) else {})
-        authorization = str(headers.get("Authorization") or headers.get("authorization") or "")
-        if authorization.lower().startswith("bearer "):
-            bearer_value = authorization[7:].strip()
-            if bearer_value and "${" not in bearer_value:
-                discovered_secret = bearer_value
-
-        protected_secret = env_data.get("TYPEFULLY_API_KEY") or discovered_secret
-        if not protected_secret:
-            continue
-        if discovered_secret and not env_data.get("TYPEFULLY_API_KEY"):
-            env_data["TYPEFULLY_API_KEY"] = discovered_secret
-        protected_url = urlunsplit((
-            parsed.scheme,
-            parsed.netloc,
-            parsed.path,
-            urlencode(kept_query),
-            parsed.fragment,
-        ))
-        protected_authorization = "Bearer ${TYPEFULLY_API_KEY}"
-        entry_changed = (
-            str(entry.get("url") or "") != protected_url
-            or headers.get("Authorization") != protected_authorization
-            or "authorization" in headers
-        )
-        if not entry_changed and not discovered_secret:
-            continue
-        entry["url"] = protected_url
-        headers.pop("authorization", None)
-        headers["Authorization"] = protected_authorization
-        entry["headers"] = headers
-        changed = True
-
-    if not changed:
-        return False
-    if env_data.get("TYPEFULLY_API_KEY") and not read_env(ENV_FILE).get("TYPEFULLY_API_KEY"):
+    if env_changed:
         write_env(ENV_FILE, env_data)
-    _atomic_write_text(
-        config_path,
-        yaml.safe_dump(loaded, sort_keys=False, default_flow_style=False),
-    )
-    print("[security] migrated Typefully MCP credential to protected environment storage", flush=True)
-    return True
+    if config_changed:
+        _atomic_write_text(
+            config_path,
+            yaml.safe_dump(loaded, sort_keys=False, default_flow_style=False),
+        )
+    if env_changed or config_changed:
+        print("[startup] removed retired Typefully integration", flush=True)
+    return env_changed or config_changed
 
 
 # ── xAI Grok SuperGrok OAuth (Device Code — RFC 8628) ───────────────────────
@@ -1928,7 +1889,7 @@ async def lifespan(app):
     # Keeping it out of the idle baseline saves memory without sleeping the
     # gateway, messaging channels, cron, or webhook intake.
     async with cfg_lock:
-        migrate_typefully_mcp_secret()
+        remove_typefully_configuration()
     await auto_start()
     await _recover_app_ops_jobs()
     await _start_coo_watchdog()

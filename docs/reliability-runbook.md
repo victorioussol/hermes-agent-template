@@ -16,23 +16,23 @@ USD 5 limit with a monthly reset. Hermes v0.20 managed scope pins the effective
 routes even if stale values remain in the editable dashboard config:
 
 - Main reasoning: `openai-codex / gpt-5.6-terra`, medium effort from the user config.
-- Automatic main fallback: `openrouter / deepseek/deepseek-v4-flash`.
-- Delegated subagents: DeepSeek V4 Flash at high effort, at most two at once,
-  one level deep, and no more than 20 iterations.
-- Fast text helpers: DeepSeek V4 Flash without reasoning overhead.
-- Planning, triage, curation, and MCP helpers: DeepSeek V4 Flash at high effort.
-- Vision: `openai-codex / gpt-5.6-terra`; approval checks:
-  `openai-codex / gpt-5.6-sol`.
+- Automatic main fallback: `openrouter / deepseek/deepseek-v4-flash-0731`.
+- Delegated subagents and routine helpers: `openai-codex / gpt-5.6-terra`,
+  low effort, at most two at once, one level deep, and 30 iterations.
+- Vision: `openai-codex / gpt-5.6-terra`; approval checks use Terra at medium effort.
 - Mixture-of-Agents: manual only, Flash plus Terra references, Sol synthesis,
   and a 1,536-token synthesis cap.
+- DeepSeek Flash is otherwise limited to approved extraction, normalization,
+  and deduplication jobs. DeepSeek Pro is limited to an independent weekly or
+  monthly critic that can propose changes but cannot apply them.
+- GPT-5.6 Luna, Qwen, GLM, and Kimi remain evaluation-only until fixed canaries
+  show a material benefit. GPT, Claude, and Gemini never run through OpenRouter.
 
 ## Secrets
 
 - Never store a literal credential in an MCP URL.
-- Store the Typefully credential as `TYPEFULLY_API_KEY` and configure the MCP
-  server at `https://mcp.typefully.com/mcp` with an `Authorization` header set
-  to `Bearer ${TYPEFULLY_API_KEY}`. The startup migration moves a
-  pre-existing literal URL key into this protected form automatically.
+- Typefully is retired. Startup removes its MCP entry and any persisted
+  credential; remove the matching Railway variable as part of deployment.
 - Rotate any credential that has previously appeared in the dashboard or logs.
 - The setup API only returns its managed allowlist; unrelated `.env` values are
   preserved server-side and never serialized to the browser.
@@ -45,8 +45,9 @@ routes even if stale values remain in the editable dashboard config:
    `limit_reset=monthly`. Do not deploy the managed fallback before both match.
 3. Confirm the branch contains the currently deployed App Ops changes.
 4. Run the unit suite and build the Docker image.
-5. Verify the image reports Hermes `v0.20.0 (2026.8.3)`, Claude Code `2.1.221`,
-   and SQLite `3.53.4` or newer.
+5. Verify the image reports Hermes `v0.20.0 (2026.8.3)` and SQLite `3.53.4`
+   or newer.
+6. Validate `hermes-continuous-improvement` and confirm the image exposes it.
 
 ## After deployment
 
@@ -62,11 +63,14 @@ Confirm all of the following before calling the deployment healthy:
   complete. Verify the expected provider for the model-backed job.
 - Logs contain no raw session token, no repeated Raft dependency warning, no
   duplicate Telegram poller, and no gateway crash loop.
-- The Typefully MCP configuration contains a placeholder, not a literal key.
+- Typefully is absent from MCP servers, Railway variables, and the setup page.
+- The budget guard reports `limit_usd=5` and `limit_reset=monthly` without
+  printing a credential.
+- Curator is prune-only, keeps backups, and does not prune bundled skills.
 
 The public `/health` response also becomes degraded when an enabled scheduled
 job records a new failure after the current process started. The scheduled
-GitHub workflow checks this endpoint every four hours, so a working web page
+GitHub workflow checks this endpoint every 15 minutes, so a working web page
 with broken model authentication no longer looks healthy for a week.
 
 ## Profiles and dashboards
@@ -81,14 +85,12 @@ with broken model authentication no longer looks healthy for a week.
   effective model information. Cost-sensitive model leaves are deployment
   managed and cannot be silently changed there.
 
-## Subscription CLI providers
+## Excluded subscription CLI providers
 
-OAuth credentials on Victor's Mac are not visible inside Railway. The image
-includes Claude Code so its Railway login can be completed and persisted under
-the `/data` volume later. It is an explicit subagent lane, not an automatic
-fallback. The old Gemini CLI consumer OAuth route is not used as a Hermes
-provider; Google directs third-party agents to supported API/Vertex routes, and
-the former individual Google AI Pro CLI route is not dependable for this setup.
+OAuth credentials on Victor's Mac are not visible inside Railway. Gemini CLI
+and Claude Code are intentionally out of scope for this deployment and are not
+installed in the image. Revisit either only as a separate, measured provider
+project; neither is an automatic fallback.
 
 ### Guiri App Ops founder filter
 
@@ -140,8 +142,15 @@ backed-up Hermes files only if the upgrade changed their contents.
 
 The native dashboard stops after its idle window and restarts on the next
 authenticated dashboard request. The gateway, messaging channels, cron jobs,
-webhooks, Honcho memory, and TTS remain online. Compare 24-hour and 48-hour
+webhooks, built-in memory, and TTS remain online. External memory remains
+optional until its provider canary is healthy. Compare 24-hour and 48-hour
 average memory and projected monthly spend after deployment; the target is
 below $13.50/month to leave room under the $15 ceiling. The local image smoke
 used 185.3 MiB with the gateway alone and 274.7 MiB with the dashboard open,
 so idling removed about 89 MiB in that controlled test.
+
+OpenRouter has a separate USD 5 monthly hard ceiling. Run
+`/app/openrouter_budget_guard.py` daily and deliver only non-`ok` results. Its
+thresholds are USD 2.50 notice, USD 4 warning, and USD 4.75 critical. Optional
+model evaluations stop at warning. Normal expected model spend is under USD
+1.25/month, but the provider-side limit is the real protection.

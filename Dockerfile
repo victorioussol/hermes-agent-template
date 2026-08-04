@@ -35,7 +35,6 @@ RUN apt-get update && \
  apt-get install -y --no-install-recommends curl ca-certificates git tini && \
  curl -fsSL https://deb.nodesource.com/setup_22.x | bash - && \
  apt-get install -y --no-install-recommends nodejs && \
- npm install -g --no-fund --no-audit @anthropic-ai/claude-code@2.1.221 && \
  rm -rf /var/lib/apt/lists/*
 
 RUN git clone --depth 1 --branch ${HERMES_REF} https://github.com/NousResearch/hermes-agent.git /opt/hermes-agent && \
@@ -50,6 +49,10 @@ RUN git clone --depth 1 --branch ${HERMES_REF} https://github.com/NousResearch/h
  rm -rf /opt/hermes-agent/web /opt/hermes-agent/.git /root/.npm
 
 RUN python -c 'from hermes_cli.config import OPTIONAL_ENV_VARS; print("\n".join(sorted(OPTIONAL_ENV_VARS)))' > /opt/hermes-agent/.optional_env_keys
+
+# Environment-specific operating policy. Keep this in the image so every
+# Railway rebuild receives the same reviewed self-improvement procedure.
+COPY managed-skills/hermes-continuous-improvement /opt/hermes-agent/skills/hermes-continuous-improvement
 
 # Hermes v0.20 managed scope keeps the subscription-backed model policy
 # authoritative while leaving unrelated dashboard settings editable.
@@ -68,6 +71,7 @@ RUN mkdir -p /data/.hermes
 
 COPY server.py /app/server.py
 COPY coo_watchdog.py /app/coo_watchdog.py
+COPY openrouter_budget_guard.py /app/openrouter_budget_guard.py
 COPY templates/ /app/templates/
 COPY start.sh /app/start.sh
 COPY career_outbox_append.py /app/career_outbox_append.py

@@ -25,11 +25,11 @@ open_dashboard() {
 }
 
 docker run --rm --entrypoint hermes "${IMAGE}" --version | grep -F "v0.20.0 (2026.8.3)"
-docker run --rm --entrypoint claude "${IMAGE}" --version | grep -F "2.1.221"
 docker run --rm --entrypoint python "${IMAGE}" -c 'import sqlite3,sys; print(sqlite3.sqlite_version); sys.exit(sqlite3.sqlite_version_info < (3,51,3))'
 docker run --rm --entrypoint hermes "${IMAGE}" gateway run --help | grep -F -- "--replace"
 docker run --rm --entrypoint hermes "${IMAGE}" dashboard --help | grep -F -- "--skip-build"
 docker run --rm --entrypoint hermes "${IMAGE}" doctor | grep -F "Managed scope active"
+docker run --rm --entrypoint test "${IMAGE}" -f /opt/hermes-agent/skills/hermes-continuous-improvement/SKILL.md
 
 docker run -d --name "${CONTAINER}" \
   -p 127.0.0.1:18080:8080 \

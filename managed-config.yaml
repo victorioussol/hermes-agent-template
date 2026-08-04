@@ -1,62 +1,62 @@
 # Deployment-owned cost and reliability policy. Hermes overlays these leaves
 # on the editable dashboard config, so a saved UI choice cannot silently move
-# the main agent onto the metered OpenRouter key.
+# routine work onto the metered OpenRouter key.
 model:
   provider: openai-codex
   default: gpt-5.6-terra
+
+agent:
+  reasoning_effort: medium
 
 # This fallback is safe to enable only after the Hermes OpenRouter key has a
 # provider-side USD 5 monthly limit. The deployment runbook treats that
 # read-back as a release gate.
 fallback_providers:
   - provider: openrouter
-    model: deepseek/deepseek-v4-flash
+    model: deepseek/deepseek-v4-flash-0731
 
 delegation:
-  provider: openrouter
-  model: deepseek/deepseek-v4-flash
-  reasoning_effort: high
-  max_iterations: 20
+  provider: openai-codex
+  model: gpt-5.6-terra
+  reasoning_effort: low
+  max_iterations: 30
   max_concurrent_children: 2
   max_spawn_depth: 1
   orchestrator_enabled: true
-  max_summary_chars: 8000
+  max_summary_chars: 12000
+  child_timeout_seconds: 1800
 
 auxiliary:
-  # Keep automatic discovery on free SKUs only. Paid OpenRouter use is limited
-  # to the explicit DeepSeek Flash routes below and the provider-side cap.
+  # Do not let automatic side-jobs discover paid OpenRouter models. Every
+  # routine slot below is pinned to the subscription-backed Codex route.
   free_only: true
-  vision:
+  vision: &codex_low
     provider: openai-codex
     model: gpt-5.6-terra
     reasoning_effort: low
-  web_extract: &flash_fast
-    provider: openrouter
-    model: deepseek/deepseek-v4-flash
-  compression: *flash_fast
-  title_generation: *flash_fast
-  profile_describer: *flash_fast
-  skills_hub: &flash_reasoning
-    provider: openrouter
-    model: deepseek/deepseek-v4-flash
-    reasoning_effort: high
-  mcp: *flash_reasoning
-  triage_specifier: *flash_reasoning
-  kanban_decomposer: *flash_reasoning
-  curator: *flash_reasoning
+  web_extract: *codex_low
+  compression: *codex_low
+  title_generation: *codex_low
+  profile_describer: *codex_low
+  skills_hub: *codex_low
+  mcp: *codex_low
+  triage_specifier: *codex_low
+  kanban_decomposer: *codex_low
+  curator: *codex_low
   approval:
     provider: openai-codex
-    model: gpt-5.6-sol
-    reasoning_effort: low
+    model: gpt-5.6-terra
+    reasoning_effort: medium
 
 # Mixture-of-Agents is opt-in and multiplies calls. Keep its manual preset on
 # one cheap independent reference plus subscription-backed final synthesis.
+# The preset is manual; normal turns never invoke it.
 moa:
   presets:
     default:
       reference_models:
         - provider: openrouter
-          model: deepseek/deepseek-v4-flash
+          model: deepseek/deepseek-v4-flash-0731
         - provider: openai-codex
           model: gpt-5.6-terra
       aggregator:
@@ -68,6 +68,21 @@ moa:
 # Detached dashboard chats can be restored from disk; keeping fewer live
 # agents prevents idle sessions from steadily consuming Railway memory.
 max_live_sessions: 8
+
+# Deterministic pruning is cheap and reversible. LLM consolidation remains an
+# explicit review action because a full pass can make many calls and broad
+# changes to the skill library.
+curator:
+  enabled: true
+  interval_hours: 168
+  min_idle_hours: 2
+  stale_after_days: 45
+  archive_after_days: 120
+  consolidate: false
+  prune_builtins: false
+  backup:
+    enabled: true
+    keep: 8
 
 security:
   redact_secrets: true
