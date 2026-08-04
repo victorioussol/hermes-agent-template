@@ -65,6 +65,7 @@ templates = Jinja2Templates(directory=str(Path(__file__).parent / "templates"))
 
 HERMES_HOME = os.environ.get("HERMES_HOME", str(Path.home() / ".hermes"))
 ENV_FILE = Path(HERMES_HOME) / ".env"
+_PROCESS_STARTED_AT = datetime.now(timezone.utc)
 
 
 def _resolve_pairing_dir(home: str | Path | None = None) -> Path:
@@ -1425,8 +1426,54 @@ async def page_index(request: Request):
     return templates.TemplateResponse(request, "index.html")
 
 
+def _parse_hermes_timestamp(value: object) -> datetime | None:
+    if not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def cron_health_status() -> dict[str, object]:
+    """Report new scheduled-job failures without exposing prompts or errors.
+
+    Historical failures are deliberately ignored at process start so an old
+    bad run cannot block a repaired deployment. Any enabled job that fails
+    after this process starts degrades /health until that job succeeds.
+    """
+    jobs_path = Path(HERMES_HOME) / "cron" / "jobs.json"
+    try:
+        loaded = json.loads(jobs_path.read_text())
+    except FileNotFoundError:
+        return {"available": False, "healthy": True, "new_failures": 0}
+    except (OSError, json.JSONDecodeError):
+        return {"available": False, "healthy": False, "new_failures": 0}
+
+    if isinstance(loaded, list):
+        jobs = loaded
+    elif isinstance(loaded, dict):
+        jobs = loaded.get("jobs", [])
+    else:
+        jobs = []
+    failures = 0
+    for job in jobs:
+        if not isinstance(job, dict) or job.get("enabled", True) is False:
+            continue
+        if str(job.get("last_status") or "").lower() not in {"error", "failed", "unknown"}:
+            continue
+        last_run = _parse_hermes_timestamp(job.get("last_run_at"))
+        if last_run is not None and last_run >= _PROCESS_STARTED_AT:
+            failures += 1
+    return {"available": True, "healthy": failures == 0, "new_failures": failures}
+
+
 async def route_health(request: Request):
     configured = is_config_complete()
+    cron_status = cron_health_status()
     watchdog_status = dict(
         _coo_watchdog.public_status()
         if _coo_watchdog is not None
@@ -1454,6 +1501,7 @@ async def route_health(request: Request):
             or (not configured and not require_configured)
         )
         and watchdog_healthy
+        and cron_status["healthy"] is True
     )
     return JSONResponse(
         {
@@ -1461,6 +1509,7 @@ async def route_health(request: Request):
             "configured": configured,
             "gateway": gw.state,
             "dashboard": dash.status()["state"],
+            "scheduled_jobs": cron_status,
             "coo_watchdog": watchdog_status,
         },
         status_code=200 if healthy else 503,
@@ -2948,7 +2997,11 @@ def build_uvicorn_config(port: int):
         app,
         host="0.0.0.0",
         port=port,
-        log_level="info",
+        # Uvicorn's websocket protocol logger includes the complete URL at
+        # INFO level even when HTTP access logs are disabled. Hermes puts an
+        # ephemeral dashboard token in that URL, so keep protocol chatter out
+        # of provider logs while preserving warnings and application logs.
+        log_level="warning",
         loop="asyncio",
         access_log=False,
     )

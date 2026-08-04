@@ -24,18 +24,21 @@ open_dashboard() {
   return 1
 }
 
-docker run --rm --entrypoint hermes "${IMAGE}" --version | grep -F "v0.18.2 (2026.7.7.2)"
+docker run --rm --entrypoint hermes "${IMAGE}" --version | grep -F "v0.20.0 (2026.8.3)"
+docker run --rm --entrypoint claude "${IMAGE}" --version | grep -F "2.1.221"
+docker run --rm --entrypoint python "${IMAGE}" -c 'import sqlite3,sys; print(sqlite3.sqlite_version); sys.exit(sqlite3.sqlite_version_info < (3,51,3))'
 docker run --rm --entrypoint hermes "${IMAGE}" gateway run --help | grep -F -- "--replace"
 docker run --rm --entrypoint hermes "${IMAGE}" dashboard --help | grep -F -- "--skip-build"
+docker run --rm --entrypoint hermes "${IMAGE}" doctor | grep -F "Managed scope active"
 
 docker run -d --name "${CONTAINER}" \
   -p 127.0.0.1:18080:8080 \
   -e ADMIN_PASSWORD=smoke-admin-password \
   -e COOKIE_SECURE=false \
   -e HERMES_DASHBOARD_IDLE_SECONDS=2 \
-  -e LLM_MODEL=deepseek-chat \
-  -e HERMES_MODEL_PROVIDER=deepseek \
-  -e DEEPSEEK_API_KEY=smoke-provider-key \
+  -e LLM_MODEL=gpt-5.6-terra \
+  -e HERMES_MODEL_PROVIDER=openai-codex \
+  -e HERMES_AUTH_JSON_BOOTSTRAP='{"openai-codex":{"access_token":"smoke-token","refresh_token":"smoke-refresh","expires_at":4102444800}}' \
   "${IMAGE}" >/dev/null
 
 for _ in $(seq 1 60); do

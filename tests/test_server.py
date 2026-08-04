@@ -4,6 +4,7 @@ import os
 import sys
 import tempfile
 import unittest
+from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
@@ -68,6 +69,35 @@ class IsolatedHermesHome(unittest.TestCase):
 
 
 class ConfigTests(IsolatedHermesHome):
+    def test_new_scheduled_job_failure_is_visible_without_sensitive_details(self):
+        cron_dir = self.home / "cron"
+        cron_dir.mkdir()
+        (cron_dir / "jobs.json").write_text(json.dumps([{
+            "id": "private-job-id",
+            "enabled": True,
+            "last_status": "error",
+            "last_error": "secret provider response",
+            "last_run_at": datetime.now(timezone.utc).isoformat(),
+        }]))
+        status = server.cron_health_status()
+        self.assertEqual(status["new_failures"], 1)
+        self.assertFalse(status["healthy"])
+        self.assertNotIn("private-job-id", json.dumps(status))
+        self.assertNotIn("secret provider response", json.dumps(status))
+
+    def test_historical_scheduled_job_failure_does_not_block_deploy(self):
+        cron_dir = self.home / "cron"
+        cron_dir.mkdir()
+        (cron_dir / "jobs.json").write_text(json.dumps([{
+            "id": "old-job",
+            "enabled": True,
+            "last_status": "error",
+            "last_run_at": "2000-01-01T00:00:00+00:00",
+        }]))
+        status = server.cron_health_status()
+        self.assertEqual(status["new_failures"], 0)
+        self.assertTrue(status["healthy"])
+
     def test_codex_provider_survives_openrouter_key(self):
         (self.home / "config.yaml").write_text(
             "model:\n"
@@ -273,7 +303,7 @@ class ConfigTests(IsolatedHermesHome):
 class SecurityTests(unittest.TestCase):
     def test_startup_preserves_private_pre_upgrade_backup(self):
         start_script = (Path(__file__).resolve().parents[1] / "start.sh").read_text()
-        self.assertIn("backups/pre-v2026.7.7.2", start_script)
+        self.assertIn("backups/pre-v2026.8.3", start_script)
         self.assertIn("chmod 700 /data/.hermes/backups", start_script)
         self.assertIn("backup_once /data/.hermes/config.yaml config.yaml", start_script)
         self.assertIn("backup_once /data/.hermes/auth.json auth.json", start_script)
@@ -290,7 +320,9 @@ class SecurityTests(unittest.TestCase):
             self.assertNotIn(secret, clean)
 
     def test_uvicorn_access_log_is_disabled(self):
-        self.assertFalse(server.build_uvicorn_config(8080).access_log)
+        config = server.build_uvicorn_config(8080)
+        self.assertFalse(config.access_log)
+        self.assertEqual(config.log_level, "warning")
 
     def test_cross_site_state_change_is_rejected(self):
         token = server._make_auth_token()
@@ -595,6 +627,23 @@ class LifecycleTests(unittest.IsolatedAsyncioTestCase):
         server.gw.state = "starting"
         try:
             with patch("server.is_config_complete", return_value=True):
+                response = await server.route_health(request("/health"))
+        finally:
+            server.gw.state = original_state
+        self.assertEqual(response.status_code, 503)
+
+    async def test_new_scheduled_job_failure_is_not_railway_ready(self):
+        original_state = server.gw.state
+        server.gw.state = "running"
+        try:
+            with (
+                patch("server.is_config_complete", return_value=True),
+                patch("server.cron_health_status", return_value={
+                    "available": True,
+                    "healthy": False,
+                    "new_failures": 1,
+                }),
+            ):
                 response = await server.route_health(request("/health"))
         finally:
             server.gw.state = original_state

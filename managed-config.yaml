@@ -1,0 +1,64 @@
+# Deployment-owned cost and reliability policy. Hermes overlays these leaves
+# on the editable dashboard config, so a saved UI choice cannot silently move
+# routine traffic onto the metered OpenRouter key.
+model:
+  provider: ${HERMES_MODEL_PROVIDER}
+  default: ${LLM_MODEL}
+
+# OpenRouter remains configured for deliberate, manual use. Automatic main
+# model failover is disabled until a hard provider-side spending limit is set.
+fallback_providers: []
+
+delegation:
+  provider: openai-codex
+  model: gpt-5.4-mini
+  reasoning_effort: low
+  max_iterations: 30
+  max_concurrent_children: 2
+  max_spawn_depth: 1
+  orchestrator_enabled: true
+  max_summary_chars: 12000
+
+auxiliary:
+  # Never fall through to a paid OpenRouter model for background helper work.
+  free_only: true
+  vision: &codex_mini
+    provider: openai-codex
+    model: gpt-5.4-mini
+    reasoning_effort: low
+  web_extract: *codex_mini
+  compression: *codex_mini
+  skills_hub: *codex_mini
+  mcp: *codex_mini
+  title_generation: *codex_mini
+  triage_specifier: *codex_mini
+  kanban_decomposer: *codex_mini
+  profile_describer: *codex_mini
+  curator: *codex_mini
+  approval:
+    provider: openai-codex
+    model: gpt-5.4
+    reasoning_effort: low
+
+# Mixture-of-Agents is opt-in and multiplies calls. Keep its manual preset on
+# subscription-backed models and cap its synthesis budget.
+moa:
+  presets:
+    default:
+      reference_models:
+        - provider: openai-codex
+          model: gpt-5.4-mini
+        - provider: openai-codex
+          model: gpt-5.4
+      aggregator:
+        provider: openai-codex
+        model: gpt-5.6-terra
+      max_tokens: 2048
+      enabled: true
+
+# Detached dashboard chats can be restored from disk; keeping fewer live
+# agents prevents idle sessions from steadily consuming Railway memory.
+max_live_sessions: 8
+
+security:
+  redact_secrets: true
