@@ -17,6 +17,25 @@ EXPECTED_LIMIT_USD = 5.0
 EXPECTED_RESET = "monthly"
 
 
+def read_env_value(path: Path, key: str) -> str:
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return ""
+    for raw_line in lines:
+        line = raw_line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        name, value = line.split("=", 1)
+        if name.strip() != key:
+            continue
+        value = value.strip()
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'}:
+            value = value[1:-1]
+        return value.strip()
+    return ""
+
+
 def evaluate_metadata(metadata: dict) -> tuple[dict, int]:
     try:
         limit = float(metadata.get("limit"))
@@ -81,6 +100,9 @@ def write_status(path: Path, status: dict) -> None:
 def main() -> int:
     key = os.environ.get("OPENROUTER_API_KEY", "").strip()
     if not key:
+        hermes_home = Path(os.environ.get("HERMES_HOME", "/data/.hermes"))
+        key = read_env_value(hermes_home / ".env", "OPENROUTER_API_KEY")
+    if not key:
         print(json.dumps({"status": "not_configured"}, sort_keys=True))
         return 3
     try:
@@ -100,7 +122,8 @@ def main() -> int:
         )
     )
     write_status(output_path, status)
-    print(json.dumps(status, sort_keys=True))
+    if status.get("status") != "ok":
+        print(json.dumps(status, sort_keys=True))
     return exit_code
 
 

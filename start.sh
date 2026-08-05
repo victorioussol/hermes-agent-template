@@ -5,6 +5,7 @@ mkdir -p /data/.hermes/cron /data/.hermes/sessions /data/.hermes/logs \
          /data/.hermes/memories /data/.hermes/skills /data/.hermes/platforms/pairing \
          /data/.hermes/hooks /data/.hermes/cache/images /data/.hermes/cache/audio \
          /data/.hermes/workspace /data/.hermes/skins /data/.hermes/plans \
+         /data/.hermes/scripts \
          /data/.hermes/home
 
 # Preserve the pre-upgrade state on the persistent Railway volume. The backup
@@ -42,6 +43,12 @@ if [ ! -f /data/.hermes/auth.json ] && [ -n "${HERMES_AUTH_JSON_BOOTSTRAP}" ]; t
 fi
 
 [ -f /data/.hermes/auth.json ] && chmod 600 /data/.hermes/auth.json
+
+# Cron scripts live on the persistent volume. Refresh the managed budget guard
+# on every boot so an image upgrade cannot leave an older Railway-only guard in
+# place or lose the script when a new volume is provisioned.
+install -m 700 /app/openrouter_budget_guard.py \
+  /data/.hermes/scripts/openrouter_budget_guard.py
 
 rm -f /data/.hermes/gateway.pid
 
