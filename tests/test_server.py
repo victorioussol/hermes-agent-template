@@ -81,9 +81,59 @@ class ConfigTests(IsolatedHermesHome):
         }]))
         status = server.cron_health_status()
         self.assertEqual(status["new_failures"], 1)
+        self.assertEqual(status["failure_kinds"]["other"], 1)
         self.assertFalse(status["healthy"])
         self.assertNotIn("private-job-id", json.dumps(status))
         self.assertNotIn("secret provider response", json.dumps(status))
+
+    def test_provider_auth_failure_is_safely_classified(self):
+        cron_dir = self.home / "cron"
+        cron_dir.mkdir()
+        (cron_dir / "jobs.json").write_text(json.dumps([{
+            "id": "private-job-id",
+            "enabled": True,
+            "last_status": "error",
+            "last_error": "Provider authentication failed: secret-token-value",
+            "last_run_at": datetime.now(timezone.utc).isoformat(),
+        }]))
+        status = server.cron_health_status()
+        self.assertEqual(status["failure_kinds"]["provider_auth"], 1)
+        self.assertNotIn("secret-token-value", json.dumps(status))
+
+    def test_fallback_requires_fresh_five_dollar_monthly_receipt(self):
+        (self.home / ".env").write_text("OPENROUTER_API_KEY=private-key\n")
+        (self.home / "openrouter-budget.json").write_text(json.dumps({
+            "checked_at": datetime.now(timezone.utc).isoformat(),
+            "status": "ok",
+            "limit_usd": 5,
+            "limit_reset": "monthly",
+            "remaining_usd": 4.95,
+        }))
+        status = server.fallback_health_status()
+        self.assertTrue(status["ready"])
+        self.assertEqual(status["model"], "deepseek/deepseek-v4-flash-0731")
+        self.assertNotIn("private-key", json.dumps(status))
+
+    def test_fallback_rejects_uncapped_receipt(self):
+        (self.home / ".env").write_text("OPENROUTER_API_KEY=private-key\n")
+        (self.home / "openrouter-budget.json").write_text(json.dumps({
+            "checked_at": datetime.now(timezone.utc).isoformat(),
+            "status": "ok",
+            "limit_usd": None,
+            "limit_reset": None,
+        }))
+        self.assertFalse(server.fallback_health_status()["ready"])
+
+    def test_fallback_rejects_exhausted_five_dollar_receipt(self):
+        (self.home / ".env").write_text("OPENROUTER_API_KEY=private-key\n")
+        (self.home / "openrouter-budget.json").write_text(json.dumps({
+            "checked_at": datetime.now(timezone.utc).isoformat(),
+            "status": "critical",
+            "limit_usd": 5,
+            "limit_reset": "monthly",
+            "usage_monthly_usd": 5,
+        }))
+        self.assertFalse(server.fallback_health_status()["ready"])
 
     def test_historical_scheduled_job_failure_does_not_block_deploy(self):
         cron_dir = self.home / "cron"

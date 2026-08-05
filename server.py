@@ -1399,6 +1399,37 @@ def _parse_hermes_timestamp(value: object) -> datetime | None:
     return parsed.astimezone(timezone.utc)
 
 
+def _cron_failure_kind(job: dict[str, object]) -> str:
+    """Reduce a private cron error to a safe recovery category."""
+    detail = " ".join(
+        str(job.get(field) or "")
+        for field in ("last_error", "error", "message")
+    ).lower()
+    if any(marker in detail for marker in (
+        "authentication",
+        "unauthorized",
+        "invalid_api_key",
+        "invalid api key",
+        "api key",
+        "oauth",
+        "token expired",
+        "credential",
+        "401",
+    )):
+        return "provider_auth"
+    if (
+        any(marker in detail for marker in (
+            "model_not_found",
+            "model not found",
+            "unknown model",
+            "no endpoints found",
+        ))
+        or ("model" in detail and any(marker in detail for marker in ("unavailable", "404")))
+    ):
+        return "model_unavailable"
+    return "other"
+
+
 def cron_health_status() -> dict[str, object]:
     """Report new scheduled-job failures without exposing prompts or errors.
 
@@ -1420,7 +1451,11 @@ def cron_health_status() -> dict[str, object]:
         jobs = loaded.get("jobs", [])
     else:
         jobs = []
-    failures = 0
+    failure_kinds = {
+        "provider_auth": 0,
+        "model_unavailable": 0,
+        "other": 0,
+    }
     for job in jobs:
         if not isinstance(job, dict) or job.get("enabled", True) is False:
             continue
@@ -1428,13 +1463,80 @@ def cron_health_status() -> dict[str, object]:
             continue
         last_run = _parse_hermes_timestamp(job.get("last_run_at"))
         if last_run is not None and last_run >= _PROCESS_STARTED_AT:
-            failures += 1
-    return {"available": True, "healthy": failures == 0, "new_failures": failures}
+            failure_kinds[_cron_failure_kind(job)] += 1
+    failures = sum(failure_kinds.values())
+    return {
+        "available": True,
+        "healthy": failures == 0,
+        "new_failures": failures,
+        "failure_kinds": failure_kinds,
+    }
+
+
+def fallback_health_status() -> dict[str, object]:
+    """Expose whether the bounded OpenRouter fallback can safely take traffic."""
+    model = "deepseek/deepseek-v4-flash-0731"
+    configured = bool(_read_secret("OPENROUTER_API_KEY"))
+    status_path = Path(os.environ.get(
+        "HERMES_OPENROUTER_BUDGET_STATUS_FILE",
+        str(Path(HERMES_HOME) / "openrouter-budget.json"),
+    ))
+    try:
+        receipt = json.loads(status_path.read_text())
+    except FileNotFoundError:
+        receipt = {}
+        budget_status = "missing"
+    except (OSError, json.JSONDecodeError):
+        receipt = {}
+        budget_status = "unavailable"
+    else:
+        budget_status = str(receipt.get("status") or "unknown")
+
+    checked_at = _parse_hermes_timestamp(receipt.get("checked_at"))
+    fresh = bool(
+        checked_at is not None
+        and (datetime.now(timezone.utc) - checked_at).total_seconds() <= 90 * 60
+    )
+    if receipt and not fresh:
+        budget_status = "stale"
+    try:
+        limit = float(receipt.get("limit_usd"))
+    except (TypeError, ValueError):
+        limit = None
+    try:
+        remaining = float(receipt.get("remaining_usd"))
+    except (TypeError, ValueError):
+        remaining = None
+    try:
+        usage = float(receipt.get("usage_monthly_usd"))
+    except (TypeError, ValueError):
+        usage = None
+    safe_receipt = (
+        limit == 5.0
+        and str(receipt.get("limit_reset") or "").lower() == "monthly"
+        and budget_status in {"ok", "notice", "warning", "critical"}
+        and (remaining is None or remaining > 0)
+        and (usage is None or usage < 5.0)
+        and fresh
+    )
+    return {
+        "provider": "openrouter",
+        "model": model,
+        "configured": configured,
+        "ready": configured and safe_receipt,
+        "budget_status": budget_status,
+        "checked_at": (
+            checked_at.isoformat().replace("+00:00", "Z")
+            if checked_at is not None
+            else None
+        ),
+    }
 
 
 async def route_health(request: Request):
     configured = is_config_complete()
     cron_status = cron_health_status()
+    fallback_status = fallback_health_status()
     watchdog_status = dict(
         _coo_watchdog.public_status()
         if _coo_watchdog is not None
@@ -1471,6 +1573,7 @@ async def route_health(request: Request):
             "gateway": gw.state,
             "dashboard": dash.status()["state"],
             "scheduled_jobs": cron_status,
+            "fallback": fallback_status,
             "coo_watchdog": watchdog_status,
         },
         status_code=200 if healthy else 503,

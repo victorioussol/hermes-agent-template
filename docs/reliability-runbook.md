@@ -69,9 +69,35 @@ Confirm all of the following before calling the deployment healthy:
 - Curator is prune-only, keeps backups, and does not prune bundled skills.
 
 The public `/health` response also becomes degraded when an enabled scheduled
-job records a new failure after the current process started. The scheduled
-GitHub workflow checks this endpoint every 15 minutes, so a working web page
-with broken model authentication no longer looks healthy for a week.
+job records a new failure after the current process started. It exposes only a
+safe failure category, never the job, prompt, provider response, or credential.
+It also reports whether the DeepSeek fallback has a fresh receipt proving that
+the OpenRouter key still has its exact USD 5 monthly limit.
+
+The scheduled GitHub workflow checks this endpoint every 15 minutes and sends
+alerts through the existing Telegram bot. It requires encrypted repository
+secrets named `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`, and `RAILWAY_TOKEN`.
+The Railway token must be scoped only to this project's production environment.
+
+Recovery is deliberately bounded:
+
+- Codex authentication or model availability failure uses Hermes' existing
+  request-level DeepSeek Flash fallback. A service restart is not attempted,
+  because it cannot renew an expired Codex login.
+- An unreachable service, stopped gateway, or stopped configured watchdog gets
+  exactly one Railway redeploy for a new incident.
+- An arbitrary scheduled-task failure or missing configuration alerts without
+  a restart, so recovery does not hide the real problem.
+- A second failed scheduled check sends the manual-intervention alert. Later
+  failures stay silent until health recovers, preventing restart loops and
+  Telegram spam.
+- Recovery sends a separate Telegram confirmation. Terra always remains the
+  primary model; the recovery workflow never changes model configuration.
+
+The workflow's manual `alert-test` mode verifies the current Telegram bot.
+`recovery-test` intentionally performs one redeploy and should be used only as
+an explicit end-to-end canary. Manual tests do not affect scheduled incident
+history.
 
 ## Profiles and dashboards
 
