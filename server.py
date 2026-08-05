@@ -1890,6 +1890,10 @@ async def lifespan(app):
     # gateway, messaging channels, cron, or webhook intake.
     async with cfg_lock:
         remove_typefully_configuration()
+        # Keep the isolated app-ops profile visible and correctly model-pinned
+        # even before its first webhook delivery. The same helper refreshes the
+        # profile immediately before each worker run.
+        _prepare_app_ops_runtime_env()
     await auto_start()
     await _recover_app_ops_jobs()
     await _start_coo_watchdog()

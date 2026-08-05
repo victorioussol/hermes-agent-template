@@ -150,7 +150,10 @@ used 185.3 MiB with the gateway alone and 274.7 MiB with the dashboard open,
 so idling removed about 89 MiB in that controlled test.
 
 OpenRouter has a separate USD 5 monthly hard ceiling. Run
-`/app/openrouter_budget_guard.py` daily and deliver only non-`ok` results. Its
-thresholds are USD 2.50 notice, USD 4 warning, and USD 4.75 critical. Optional
-model evaluations stop at warning. Normal expected model spend is under USD
+`/data/.hermes/scripts/openrouter_budget_guard.py` on a schedule. The image
+refreshes this persistent copy at every boot. The script always writes the
+latest receipt to `/data/.hermes/openrouter-budget.json`, but prints only
+non-`ok` results so a healthy 30-minute check stays silent. Its thresholds are
+USD 2.50 notice, USD 4 warning, and USD 4.75 critical. Optional model
+evaluations stop at warning. Normal expected model spend is under USD
 1.25/month, but the provider-side limit is the real protection.

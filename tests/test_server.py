@@ -303,6 +303,9 @@ class ConfigTests(IsolatedHermesHome):
         self.assertEqual(profile_env["TAVILY_API_KEY"], "search-key")
         self.assertNotIn("TELEGRAM_BOT_TOKEN", profile_env)
         self.assertNotIn("SOCIAL_MEDIA_API_KEY", profile_env)
+        profile_config = (profile_home / "config.yaml").read_text()
+        self.assertIn("default: gpt-5.6-terra", profile_config)
+        self.assertIn("provider: openai-codex", profile_config)
 
 
 class SecurityTests(unittest.TestCase):
