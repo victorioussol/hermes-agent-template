@@ -1,0 +1,4 @@
+interface:
+  display_name: "Hermes Continuous Improvement"
+  short_description: "Review outcomes and improve Hermes safely"
+  default_prompt: "Use $hermes-continuous-improvement to review recent outcomes and propose safe, measured improvements."

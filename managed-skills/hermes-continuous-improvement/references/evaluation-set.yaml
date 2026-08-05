@@ -1,0 +1,42 @@
+version: 1
+monthly_openrouter_budget_usd: 1.00
+cases:
+  - id: routine-summary
+    task: Summarize a bounded status log into decisions, failures, and next actions.
+    expected_route: openai-codex/gpt-5.6-terra-low
+    critical: false
+  - id: delegated-research
+    task: Research three primary sources and return a cited comparison without external writes.
+    expected_route: openai-codex/gpt-5.6-terra-low
+    critical: true
+  - id: career-normalization
+    task: Normalize and deduplicate a supplied batch of job records without inventing fields.
+    expected_route: openrouter/deepseek-v4-flash-0731
+    critical: true
+  - id: tool-recovery
+    task: Diagnose a failed tool call, select a different safe approach, and verify the result.
+    expected_route: openai-codex/gpt-5.6-terra-medium
+    critical: true
+  - id: high-consequence-review
+    task: Review a proposed production or billing change and identify missing gates and rollback proof.
+    expected_route: openai-codex/gpt-5.6-sol
+    critical: true
+  - id: independent-critic
+    task: Critique a weekly usefulness report and return proposals without modifying configuration.
+    expected_route: openrouter/deepseek-v4-pro
+    critical: false
+  - id: multimodal-challenger
+    task: Extract visible facts from a fixed dashboard screenshot and preserve uncertainty.
+    expected_route: evaluation-only
+    challengers:
+      - openrouter/qwen3.7-flash
+    critical: false
+metrics:
+  - verified_completion
+  - factual_and_source_accuracy
+  - tool_contract_success
+  - privacy_and_secret_safety
+  - latency_seconds
+  - input_tokens
+  - output_tokens
+  - estimated_cost_usd

@@ -6,23 +6,33 @@ main inference route explicit.
 ## Required production settings
 
 - `HERMES_MODEL_PROVIDER=openai-codex`
-- `LLM_MODEL=gpt-5.4`
+- `LLM_MODEL=gpt-5.6-terra`
 - `ADMIN_PASSWORD` set to a strong value
 - `HERMES_DASHBOARD_IDLE_SECONDS=300` in production (the code default is 1200;
   set `0` only when the native dashboard truly needs to stay resident)
 
-An `OPENROUTER_API_KEY` may remain available for optional models. It must not be
-used for the main `gpt-5.4` route. On each gateway start, the wrapper preserves
-or reapplies the explicit `openai-codex` provider and removes stale inline model
-endpoints that could override it.
+An `OPENROUTER_API_KEY` may remain available only after that exact key reports a
+USD 5 limit with a monthly reset. Hermes v0.20 managed scope pins the effective
+routes even if stale values remain in the editable dashboard config:
+
+- Main reasoning: `openai-codex / gpt-5.6-terra`, medium effort from the user config.
+- Automatic main fallback: `openrouter / deepseek/deepseek-v4-flash-0731`.
+- Delegated subagents and routine helpers: `openai-codex / gpt-5.6-terra`,
+  low effort, at most two at once, one level deep, and 30 iterations.
+- Vision: `openai-codex / gpt-5.6-terra`; approval checks use Terra at medium effort.
+- Mixture-of-Agents: manual only, Flash plus Terra references, Sol synthesis,
+  and a 1,536-token synthesis cap.
+- DeepSeek Flash is otherwise limited to approved extraction, normalization,
+  and deduplication jobs. DeepSeek Pro is limited to an independent weekly or
+  monthly critic that can propose changes but cannot apply them.
+- GPT-5.6 Luna, Qwen, GLM, and Kimi remain evaluation-only until fixed canaries
+  show a material benefit. GPT, Claude, and Gemini never run through OpenRouter.
 
 ## Secrets
 
 - Never store a literal credential in an MCP URL.
-- Store the Typefully credential as `TYPEFULLY_API_KEY` and configure the MCP
-  server at `https://mcp.typefully.com/mcp` with an `Authorization` header set
-  to `Bearer ${TYPEFULLY_API_KEY}`. The v0.18.2 startup migration moves a
-  pre-existing literal URL key into this protected form automatically.
+- Typefully is retired. Startup removes its MCP entry and any persisted
+  credential; remove the matching Railway variable as part of deployment.
 - Rotate any credential that has previously appeared in the dashboard or logs.
 - The setup API only returns its managed allowlist; unrelated `.env` values are
   preserved server-side and never serialized to the browser.
@@ -30,22 +40,57 @@ endpoints that could override it.
 ## Before deployment
 
 1. Confirm startup created the private, one-time pre-upgrade backup under
-   `/data/.hermes/backups/pre-v2026.7.7.2` without printing its contents.
-2. Confirm the branch contains the currently deployed App Ops changes.
-3. Run the unit suite and build the Docker image.
-4. Verify the image reports Hermes `v0.18.2 (2026.7.7.2)`.
+   `/data/.hermes/backups/pre-v2026.8.3` without printing its contents.
+2. Read back the exact OpenRouter key metadata and require `limit=5` plus
+   `limit_reset=monthly`. Do not deploy the managed fallback before both match.
+3. Confirm the branch contains the currently deployed App Ops changes.
+4. Run the unit suite and build the Docker image.
+5. Verify the image reports Hermes `v0.20.0 (2026.8.3)` and SQLite `3.53.4`
+   or newer.
+6. Validate `hermes-continuous-improvement` and confirm the image exposes it.
 
 ## After deployment
 
 Confirm all of the following before calling the deployment healthy:
 
 - Health reports the gateway running.
-- Main model is `gpt-5.4` and provider is `openai-codex`.
+- Main model is `gpt-5.6-terra` and provider is `openai-codex`.
 - A normal Telegram message and Discord probe both complete exactly once.
-- One cron canary completes without an OpenRouter 429.
+- One fresh main-model request completes through OpenAI Codex OAuth.
+- One bounded DeepSeek V4 Flash auxiliary call completes through OpenRouter,
+  and the key still reports a USD 5 monthly limit afterwards.
+- One model-backed scheduled-job canary and one script-only watchdog canary
+  complete. Verify the expected provider for the model-backed job.
 - Logs contain no raw session token, no repeated Raft dependency warning, no
   duplicate Telegram poller, and no gateway crash loop.
-- The Typefully MCP configuration contains a placeholder, not a literal key.
+- Typefully is absent from MCP servers, Railway variables, and the setup page.
+- The budget guard reports `limit_usd=5` and `limit_reset=monthly` without
+  printing a credential.
+- Curator is prune-only, keeps backups, and does not prune bundled skills.
+
+The public `/health` response also becomes degraded when an enabled scheduled
+job records a new failure after the current process started. The scheduled
+GitHub workflow checks this endpoint every 15 minutes, so a working web page
+with broken model authentication no longer looks healthy for a week.
+
+## Profiles and dashboards
+
+- `default` is the always-on personal Hermes profile. Its gateway owns normal
+  chats, channels, scheduled jobs, and the main dashboard.
+- `app-ops` is an isolated, read-only worker profile for explicit Guiri founder
+  filtering. It is started only for a matching handoff and intentionally has no
+  permanently running gateway. `Gateway stopped` is normal for this profile.
+- The wrapper setup page manages Railway-facing secrets and gateway lifecycle.
+  The native Hermes dashboard manages chats, profiles, schedules, skills, and
+  effective model information. Cost-sensitive model leaves are deployment
+  managed and cannot be silently changed there.
+
+## Excluded subscription CLI providers
+
+OAuth credentials on Victor's Mac are not visible inside Railway. Gemini CLI
+and Claude Code are intentionally out of scope for this deployment and are not
+installed in the image. Revisit either only as a separate, measured provider
+project; neither is an automatic fallback.
 
 ### Guiri App Ops founder filter
 
@@ -97,8 +142,15 @@ backed-up Hermes files only if the upgrade changed their contents.
 
 The native dashboard stops after its idle window and restarts on the next
 authenticated dashboard request. The gateway, messaging channels, cron jobs,
-webhooks, Honcho memory, and TTS remain online. Compare 24-hour and 48-hour
+webhooks, built-in memory, and TTS remain online. External memory remains
+optional until its provider canary is healthy. Compare 24-hour and 48-hour
 average memory and projected monthly spend after deployment; the target is
 below $13.50/month to leave room under the $15 ceiling. The local image smoke
 used 185.3 MiB with the gateway alone and 274.7 MiB with the dashboard open,
 so idling removed about 89 MiB in that controlled test.
+
+OpenRouter has a separate USD 5 monthly hard ceiling. Run
+`/app/openrouter_budget_guard.py` daily and deliver only non-`ok` results. Its
+thresholds are USD 2.50 notice, USD 4 warning, and USD 4.75 critical. Optional
+model evaluations stop at warning. Normal expected model spend is under USD
+1.25/month, but the provider-side limit is the real protection.

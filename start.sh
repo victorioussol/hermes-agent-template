@@ -9,7 +9,7 @@ mkdir -p /data/.hermes/cron /data/.hermes/sessions /data/.hermes/logs \
 
 # Preserve the pre-upgrade state on the persistent Railway volume. The backup
 # is intentionally idempotent so a restart never replaces the known-good copy.
-UPGRADE_BACKUP_DIR=/data/.hermes/backups/pre-v2026.7.7.2
+UPGRADE_BACKUP_DIR=/data/.hermes/backups/pre-v2026.8.3
 mkdir -p "${UPGRADE_BACKUP_DIR}"
 chmod 700 /data/.hermes/backups "${UPGRADE_BACKUP_DIR}"
 
