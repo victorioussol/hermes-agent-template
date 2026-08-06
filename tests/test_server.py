@@ -326,6 +326,20 @@ class ConfigTests(IsolatedHermesHome):
         self.assertNotIn("UNRELATED_RAILWAY_SECRET", env)
         self.assertEqual(dashboard.idle_seconds, 0)
 
+    def test_deployment_mailbox_app_password_is_allowlisted(self):
+        optional_keys = self.home / "optional-env-keys"
+        optional_keys.write_text("HERMES_GMAIL_APP_PASSWORD\n")
+        with (
+            patch.object(server, "HERMES_OPTIONAL_ENV_KEYS_FILE", optional_keys),
+            patch.dict(os.environ, {
+                "HERMES_GMAIL_APP_PASSWORD": "mailbox-app-password",
+                "UNRELATED_RAILWAY_SECRET": "must-not-pass",
+            }),
+        ):
+            env = server.build_hermes_env()
+        self.assertEqual(env["HERMES_GMAIL_APP_PASSWORD"], "mailbox-app-password")
+        self.assertNotIn("UNRELATED_RAILWAY_SECRET", env)
+
     def test_app_ops_environment_excludes_channel_and_unapproved_credentials(self):
         server.write_env(self.home / ".env", {
             "LLM_MODEL": "gpt-5.6-terra",

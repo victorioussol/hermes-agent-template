@@ -48,7 +48,11 @@ RUN git clone --depth 1 --branch ${HERMES_REF} https://github.com/NousResearch/h
  npm run build && \
  rm -rf /opt/hermes-agent/web /opt/hermes-agent/.git /root/.npm
 
-RUN python -c 'from hermes_cli.config import OPTIONAL_ENV_VARS; print("\n".join(sorted(OPTIONAL_ENV_VARS)))' > /opt/hermes-agent/.optional_env_keys
+# Preserve the agent mailbox App Password when spawning Hermes. It is a
+# deployment secret, not an upstream Hermes optional variable, so append it to
+# the wrapper allowlist explicitly.
+RUN (python -c 'from hermes_cli.config import OPTIONAL_ENV_VARS; print("\n".join(sorted(OPTIONAL_ENV_VARS)))'; \
+     printf '%s\n' HERMES_GMAIL_APP_PASSWORD) | sort -u > /opt/hermes-agent/.optional_env_keys
 
 # Environment-specific operating policy. Keep this in the image so every
 # Railway rebuild receives the same reviewed self-improvement procedure.
