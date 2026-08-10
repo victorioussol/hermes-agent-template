@@ -5,12 +5,13 @@ IMAGE="${1:-hermes-wrapper:reliability}"
 CONTAINER="hermes-wrapper-smoke-$$"
 COOKIE_FILE="/tmp/${CONTAINER}.cookies"
 HEALTH_FILE="/tmp/${CONTAINER}.health.json"
+OBSERVER_HEALTH_FILE="/tmp/${CONTAINER}.observer-health.json"
 PYTHON_BIN=python
 command -v "${PYTHON_BIN}" >/dev/null 2>&1 || PYTHON_BIN=python3
 
 cleanup() {
   docker rm -f "${CONTAINER}" >/dev/null 2>&1 || true
-  rm -f "${COOKIE_FILE}" "${HEALTH_FILE}"
+  rm -f "${COOKIE_FILE}" "${HEALTH_FILE}" "${OBSERVER_HEALTH_FILE}"
 }
 trap cleanup EXIT
 
@@ -48,6 +49,9 @@ for _ in $(seq 1 60); do
   sleep 1
 done
 "${PYTHON_BIN}" -c 'import json,sys; d=json.load(open(sys.argv[1])); assert d["status"] == "ok" and d["gateway"] == "running" and d["dashboard"] == "stopped", d' "${HEALTH_FILE}"
+curl -fsS http://127.0.0.1:18080/observer/health > "${OBSERVER_HEALTH_FILE}"
+"${PYTHON_BIN}" -c 'import json,sys; d=json.load(open(sys.argv[1])); assert d["status"] == "disabled" and d["enabled"] is False and d["task_running"] is False and d["summary_enabled"] is False and d["summary_shadow_mode"] is True, d' "${OBSERVER_HEALTH_FILE}"
+curl -fsS http://127.0.0.1:18080/observer/metrics | grep -F "mailswarm_observer_enabled 0"
 
 curl -sS -c "${COOKIE_FILE}" -X POST \
   -d username=admin -d password=smoke-admin-password -d returnTo=/ \

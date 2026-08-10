@@ -46,6 +46,7 @@ import httpx
 import websockets
 import websockets.exceptions
 from coo_watchdog import CooWatchdog, WatchdogConfig
+from mailswarm_observer import MailSwarmObserver, ObserverConfig, render_prometheus
 from starlette.applications import Starlette
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
@@ -811,7 +812,16 @@ COOKIE_MAX_AGE = 7 * 86400  # 7 days
 COOKIE_SECRET = secrets.token_bytes(32)
 
 # Public paths — no auth required. Everything else is behind the cookie gate.
-PUBLIC_PATHS = {"/health", "/login", "/logout", "/ingest/career-ops", "/ingest/app-ops-action-inbox", "/outbox/app-ops-action-inbox"}
+PUBLIC_PATHS = {
+    "/health",
+    "/observer/health",
+    "/observer/metrics",
+    "/login",
+    "/logout",
+    "/ingest/career-ops",
+    "/ingest/app-ops-action-inbox",
+    "/outbox/app-ops-action-inbox",
+}
 
 
 def _make_auth_token() -> str:
@@ -1369,6 +1379,8 @@ dash = Dashboard()
 _http_client: httpx.AsyncClient | None = None
 _coo_watchdog: CooWatchdog | None = None
 _coo_watchdog_task: asyncio.Task | None = None
+_mailswarm_observer: MailSwarmObserver | None = None
+_mailswarm_observer_task: asyncio.Task | None = None
 
 
 def get_http_client() -> httpx.AsyncClient:
@@ -1533,10 +1545,84 @@ def fallback_health_status() -> dict[str, object]:
     }
 
 
+def mailswarm_observer_status() -> dict[str, object]:
+    status = dict(
+        _mailswarm_observer.public_status()
+        if _mailswarm_observer is not None
+        else {
+            "enabled": False,
+            "configured": True,
+            "shadow_mode": True,
+            "alerts_enabled": False,
+            "summary_mode": "deterministic",
+            "summary_enabled": False,
+            "summary_shadow_mode": True,
+            "last_outcome": "not_started",
+            "heartbeat_at": None,
+            "heartbeat_max_age_seconds": 1860,
+            "classification": "idle",
+            "source_state": "not_started",
+            "active_work_count": 0,
+            "issue_counts": {},
+            "milestone_counts": {},
+            "condition_count": 0,
+            "cycles_total": 0,
+            "source_errors_total": 0,
+            "persistence_errors_total": 0,
+            "alerts_sent_total": 0,
+            "milestone_updates_sent_total": 0,
+        }
+    )
+    status["task_running"] = bool(
+        _mailswarm_observer_task is not None
+        and not _mailswarm_observer_task.done()
+    )
+    return status
+
+
+def mailswarm_observer_healthy(status: dict[str, object]) -> bool:
+    if status.get("enabled") is not True:
+        return True
+    if status.get("configured") is not True or status.get("task_running") is not True:
+        return False
+    if status.get("source_state") != "fresh":
+        return False
+    heartbeat = _parse_hermes_timestamp(status.get("heartbeat_at"))
+    if heartbeat is None:
+        return False
+    try:
+        max_age = max(60, int(status.get("heartbeat_max_age_seconds") or 1860))
+    except (TypeError, ValueError):
+        max_age = 1860
+    return (datetime.now(timezone.utc) - heartbeat).total_seconds() <= max_age
+
+
+async def route_mailswarm_observer_health(request: Request):
+    status = mailswarm_observer_status()
+    healthy = mailswarm_observer_healthy(status)
+    payload = dict(status)
+    payload["status"] = (
+        "disabled"
+        if status.get("enabled") is not True
+        else "ok" if healthy else "degraded"
+    )
+    return JSONResponse(payload, status_code=200 if healthy else 503)
+
+
+async def route_mailswarm_observer_metrics(request: Request):
+    status = mailswarm_observer_status()
+    body = render_prometheus(
+        status,
+        task_running=status.get("task_running") is True,
+    )
+    return Response(body, media_type="text/plain; version=0.0.4")
+
+
 async def route_health(request: Request):
     configured = is_config_complete()
     cron_status = cron_health_status()
     fallback_status = fallback_health_status()
+    observer_status = mailswarm_observer_status()
     watchdog_status = dict(
         _coo_watchdog.public_status()
         if _coo_watchdog is not None
@@ -1575,6 +1661,9 @@ async def route_health(request: Request):
             "scheduled_jobs": cron_status,
             "fallback": fallback_status,
             "coo_watchdog": watchdog_status,
+            # Informational only. MailSwarm work state must never trigger the
+            # existing Hermes/Railway recovery path.
+            "mailswarm_observer": observer_status,
         },
         status_code=200 if healthy else 503,
     )
@@ -1986,6 +2075,28 @@ async def _stop_coo_watchdog() -> None:
     _coo_watchdog = None
 
 
+async def _start_mailswarm_observer() -> None:
+    global _mailswarm_observer, _mailswarm_observer_task
+    config = ObserverConfig.from_env()
+    _mailswarm_observer = MailSwarmObserver(config)
+    if config.enabled:
+        _mailswarm_observer_task = asyncio.create_task(
+            _mailswarm_observer.run_forever(),
+            name="mailswarm-observer",
+        )
+
+
+async def _stop_mailswarm_observer() -> None:
+    global _mailswarm_observer, _mailswarm_observer_task
+    if _mailswarm_observer_task is not None:
+        _mailswarm_observer_task.cancel()
+        await asyncio.gather(_mailswarm_observer_task, return_exceptions=True)
+        _mailswarm_observer_task = None
+    elif _mailswarm_observer is not None:
+        await _mailswarm_observer.close()
+    _mailswarm_observer = None
+
+
 @asynccontextmanager
 async def lifespan(app):
     # The native dashboard is started lazily by authenticated proxy requests.
@@ -2000,9 +2111,11 @@ async def lifespan(app):
     await auto_start()
     await _recover_app_ops_jobs()
     await _start_coo_watchdog()
+    await _start_mailswarm_observer()
     try:
         yield
     finally:
+        await _stop_mailswarm_observer()
         await _stop_coo_watchdog()
         await _drain_app_ops_tasks()
         await asyncio.gather(
@@ -2978,6 +3091,8 @@ ANY_METHOD = ["GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS"]
 routes = [
     # Public — no auth required.
     Route("/health",                            route_health),
+    Route("/observer/health",                   route_mailswarm_observer_health),
+    Route("/observer/metrics",                  route_mailswarm_observer_metrics),
     Route("/login",                             page_login,          methods=["GET"]),
     Route("/login",                             login_post,          methods=["POST"]),
     Route("/logout",                            logout),
