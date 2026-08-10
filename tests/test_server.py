@@ -14,6 +14,7 @@ os.environ.setdefault("HERMES_HOME", TEST_HOME)
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import server
+import mailswarm_watchdog as independent_watchdog
 
 
 def request(path="/setup/api/config", method="GET", headers=None, body=b""):
@@ -771,6 +772,183 @@ class LifecycleTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response.status_code, 503)
         payload = json.loads(response.body)
         self.assertFalse(payload["coo_watchdog"]["task_running"])
+
+    async def test_disabled_mailswarm_observer_health_is_ready_without_a_task(self):
+        original_observer = server._mailswarm_observer
+        original_task = server._mailswarm_observer_task
+        server._mailswarm_observer = None
+        server._mailswarm_observer_task = None
+        try:
+            response = await server.route_mailswarm_observer_health(
+                request("/observer/health")
+            )
+        finally:
+            server._mailswarm_observer = original_observer
+            server._mailswarm_observer_task = original_task
+        self.assertEqual(response.status_code, 200)
+        payload = json.loads(response.body)
+        self.assertEqual(payload["status"], "disabled")
+        self.assertFalse(payload["summary_enabled"])
+        self.assertTrue(payload["summary_shadow_mode"])
+
+    async def test_stopped_mailswarm_observer_task_degrades_only_observer_health(self):
+        class EnabledObserver:
+            @staticmethod
+            def public_status():
+                return {
+                    "enabled": True,
+                    "configured": True,
+                    "shadow_mode": True,
+                    "heartbeat_at": datetime.now(timezone.utc).isoformat(),
+                    "heartbeat_max_age_seconds": 1860,
+                    "classification": "status_unknown",
+                    "active_work_count": 0,
+                    "condition_count": 1,
+                    "cycles_total": 1,
+                    "source_errors_total": 1,
+                    "alerts_sent_total": 0,
+                }
+
+        completed_task = asyncio.create_task(asyncio.sleep(0))
+        await completed_task
+        original_observer = server._mailswarm_observer
+        original_task = server._mailswarm_observer_task
+        original_gateway_state = server.gw.state
+        server._mailswarm_observer = EnabledObserver()
+        server._mailswarm_observer_task = completed_task
+        server.gw.state = "running"
+        try:
+            observer_response = await server.route_mailswarm_observer_health(
+                request("/observer/health")
+            )
+            with patch("server.is_config_complete", return_value=True):
+                hermes_response = await server.route_health(request("/health"))
+        finally:
+            server._mailswarm_observer = original_observer
+            server._mailswarm_observer_task = original_task
+            server.gw.state = original_gateway_state
+        self.assertEqual(observer_response.status_code, 503)
+        self.assertEqual(hermes_response.status_code, 200)
+        self.assertEqual(
+            json.loads(hermes_response.body)["mailswarm_observer"]["classification"],
+            "status_unknown",
+        )
+
+    async def test_nonfresh_observer_degrades_only_observer_and_watchdog_health(self):
+        class EnabledObserver:
+            def __init__(self, source_state, configured=True):
+                self.source_state = source_state
+                self.configured = configured
+
+            def public_status(self):
+                return {
+                    "enabled": True,
+                    "configured": self.configured,
+                    "shadow_mode": True,
+                    "heartbeat_at": datetime.now(timezone.utc).isoformat(),
+                    "heartbeat_max_age_seconds": 1860,
+                    "classification": "status_unknown",
+                    "source_state": self.source_state,
+                    "active_work_count": 0,
+                    "condition_count": 1,
+                    "cycles_total": 1,
+                    "source_errors_total": 1,
+                    "persistence_errors_total": 0,
+                    "alerts_sent_total": 0,
+                }
+
+        original_observer = server._mailswarm_observer
+        original_task = server._mailswarm_observer_task
+        original_gateway_state = server.gw.state
+        running_task = asyncio.create_task(asyncio.sleep(60))
+        server._mailswarm_observer_task = running_task
+        try:
+            stale_response = None
+            for source_state in (
+                "stale",
+                "unavailable",
+                "misconfigured",
+                "not_started",
+            ):
+                server._mailswarm_observer = EnabledObserver(
+                    source_state,
+                    configured=source_state != "misconfigured",
+                )
+                response = await server.route_mailswarm_observer_health(
+                    request("/observer/health")
+                )
+                self.assertEqual(response.status_code, 503)
+                self.assertEqual(json.loads(response.body)["status"], "degraded")
+                if source_state == "stale":
+                    stale_response = response
+
+            stale_payload = json.loads(stale_response.body)
+            assessment = independent_watchdog.assess_target(
+                independent_watchdog.Target(
+                    "MailSwarm Observer",
+                    "https://hermes.example/observer/health",
+                    True,
+                    "heartbeat",
+                    45,
+                ),
+                independent_watchdog.ProbeResult(503, stale_payload),
+                now=datetime.now(timezone.utc),
+            )
+            self.assertEqual(assessment.state, "unhealthy")
+
+            server._mailswarm_observer = EnabledObserver("stale")
+            server.gw.state = "running"
+            with patch("server.is_config_complete", return_value=True):
+                hermes_response = await server.route_health(request("/health"))
+            self.assertEqual(hermes_response.status_code, 200)
+            hermes_payload = json.loads(hermes_response.body)
+            self.assertEqual(hermes_payload["status"], "ok")
+            self.assertEqual(
+                hermes_payload["mailswarm_observer"]["source_state"],
+                "stale",
+            )
+        finally:
+            running_task.cancel()
+            await asyncio.gather(running_task, return_exceptions=True)
+            server._mailswarm_observer = original_observer
+            server._mailswarm_observer_task = original_task
+            server.gw.state = original_gateway_state
+
+    async def test_mailswarm_observer_metrics_are_aggregate_only(self):
+        class Observer:
+            @staticmethod
+            def public_status():
+                return {
+                    "enabled": True,
+                    "configured": True,
+                    "heartbeat_at": datetime.now(timezone.utc).isoformat(),
+                    "active_work_count": 2,
+                    "condition_count": 1,
+                    "cycles_total": 4,
+                    "source_errors_total": 1,
+                    "alerts_sent_total": 0,
+                }
+
+        original_observer = server._mailswarm_observer
+        original_task = server._mailswarm_observer_task
+        server._mailswarm_observer = Observer()
+        server._mailswarm_observer_task = asyncio.create_task(asyncio.sleep(60))
+        try:
+            response = await server.route_mailswarm_observer_metrics(
+                request("/observer/metrics")
+            )
+        finally:
+            server._mailswarm_observer_task.cancel()
+            await asyncio.gather(
+                server._mailswarm_observer_task,
+                return_exceptions=True,
+            )
+            server._mailswarm_observer = original_observer
+            server._mailswarm_observer_task = original_task
+        body = response.body.decode()
+        self.assertIn("mailswarm_observer_active_work_count 2", body)
+        self.assertNotIn("MSW-", body)
+        self.assertNotIn("session", body)
 
 
 if __name__ == "__main__":

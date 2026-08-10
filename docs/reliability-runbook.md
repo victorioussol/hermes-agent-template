@@ -183,3 +183,209 @@ non-`ok` results so a healthy 30-minute check stays silent. Its thresholds are
 USD 2.50 notice, USD 4 warning, and USD 4.75 critical. Optional model
 evaluations stop at warning. Normal expected model spend is under USD
 1.25/month, but the provider-side limit is the real protection.
+
+## MailSwarm Observer and independent watchdog
+
+The MailSwarm Observer is deterministic wrapper software. It does not run an
+AI model and cannot dispatch agents, change Linear or GitHub state, merge,
+deploy, approve milestones, or touch Guiri. It reads one versioned,
+MailSwarm-scoped snapshot, persists current state and evidence on the Hermes
+volume, and can post an alert only when separately enabled.
+
+Deployment defaults are deliberately inert:
+
+- `MAILSWARM_OBSERVER_ENABLED=false`
+- `MAILSWARM_OBSERVER_SHADOW_MODE=true`
+- `MAILSWARM_OBSERVER_ALERTS_ENABLED=false`
+- `MAILSWARM_OBSERVER_SUMMARY_ENABLED=false`
+- `MAILSWARM_OBSERVER_SUMMARY_SHADOW_MODE=true`
+- no scheduled morning or evening summary
+- no watchdog schedule
+
+In this state `/observer/health` returns `status=disabled`,
+`/observer/metrics` exposes only aggregate counters, no source is contacted,
+and no Observer database is created. Observer work state is informational in
+the main `/health` response and never changes Railway readiness or invokes the
+existing Hermes recovery monitor.
+
+### Snapshot contract and activation
+
+An enabled Observer requires:
+
+- `MAILSWARM_OBSERVER_SOURCE_URL`
+- `MAILSWARM_LINEAR_TEAM_ID`
+- `MAILSWARM_GITHUB_REPOSITORY`
+- optional `MAILSWARM_OBSERVER_SOURCE_BEARER_TOKEN`
+
+The JSON source must use `schema_version: 1`, carry a fresh `observed_at`, and
+repeat the exact Linear team ID and GitHub repository under `scope`. Hermes
+rejects a mismatched scope instead of inspecting another team or repository.
+The snapshot may contain issue attempts, provider sessions, CI, cloud-test
+receipts, expected Loop heartbeats, provider capacity, Actions usage,
+milestone evidence, and explicit owner decisions. Missing or stale source data
+is `status_unknown`; silence is never classified as confirmed failure.
+Issue IDs and milestone IDs must each be unique within one snapshot. A
+duplicate invalidates the snapshot before current state is replaced, producing
+`status_unknown` while preserving the last known good state. Provider session
+states `canceled` and `cancelled` are both explicit stopped states.
+
+A milestone candidate is identified by exactly one full, lowercase 40-hex Git
+SHA and one canonical artifact digest matching
+`sha256:[0-9a-f]{64}`. Short SHAs, uppercase or abbreviated digests, and mixed
+candidate evidence are rejected. The strict snapshot shape is:
+
+```json
+{
+  "id": "M1",
+  "expected_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "expected_artifact_digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+  "checks_receipt": {
+    "state": "success",
+    "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "artifact_digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+    "observed_at": "2026-08-10T09:50:00Z",
+    "evidence_url": "https://evidence.example/checks/M1"
+  },
+  "evidence_complete": true,
+  "evidence": [{
+    "kind": "cloud-test",
+    "url": "https://evidence.example/artifacts/M1",
+    "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "artifact_digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+    "observed_at": "2026-08-10T09:55:00Z"
+  }],
+  "owner_approval": {
+    "approved": true,
+    "source_url": "https://linear.app/example/decision/M1",
+    "approved_at": "2026-08-10T10:00:00Z",
+    "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "artifact_digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+  }
+}
+```
+
+`milestone_ready` requires the checks receipt and every evidence item to match
+both candidate identifiers, carry a valid timestamp no later than the source
+snapshot with an explicit timezone, and contain a valid evidence URL.
+`milestone_complete` additionally
+requires candidate-bound owner approval whose timestamp is at or after the
+latest checks/evidence timestamp and no later than the source snapshot. An old
+approval can never complete a new SHA or artifact candidate. The Observer
+records these states but never supplies approval itself.
+
+State is stored at:
+
+`$HERMES_HOME/mailswarm-observer/observer.sqlite3`
+
+The database contains current issue attempts, provider session state, last
+activity, CI and external-test receipts, Loop heartbeats, deterministic
+classification, evidence links, owner decisions, alert history, and stable
+deduplication fingerprints. Candidate-bound `milestone_ready` and
+`milestone_complete` transitions have separate persisted delivery history;
+they are not incidents and never produce resolution noise. The directory is
+mode `0700` and the database is mode `0600`. Every database transaction is
+committed or rolled back and its SQLite connection is then explicitly closed.
+If persistence fails, that cycle degrades to `status_unknown`, increments the
+aggregate persistence-error counter, sends no transition update, and leaves
+the continuous loop running for the next bounded poll.
+
+Before enabling the Observer, verify the exact MailSwarm IDs, the read-only
+source credential, persistent-volume survival across a restart, the configured
+alert thresholds, and one fresh test snapshot. Start in shadow mode. With no
+implementation issues, the expected classification is `idle` and no alert is
+sent.
+
+Live Telegram alerts require all of the following and remain off otherwise:
+
+- `MAILSWARM_OBSERVER_SHADOW_MODE=false`
+- `MAILSWARM_OBSERVER_ALERTS_ENABLED=true`
+- `MAILSWARM_OBSERVER_TELEGRAM_BOT_TOKEN`
+- `MAILSWARM_OBSERVER_TELEGRAM_CHAT_ID`
+
+The Observer makes at most two source or alert-delivery attempts per cycle.
+Polling is clamped to at least fifteen minutes. Repeated alerts use a six-hour
+default cooldown and are keyed by subject, attempt, exact SHA, and exact
+artifact digest. Incident and resolution messages include that identity plus
+up to three query-stripped evidence links and a next action. A delivered
+incident produces one explicit resolution alert when fresh evidence clears it.
+The final transport boundary redacts configured source and Telegram secrets
+even if an upstream subject or evidence path incorrectly echoes one.
+
+Milestone transition messages use the same live alert gates but have their own
+one-time fingerprints keyed by milestone, state, SHA, and artifact digest.
+Failed transition delivery remains pending across restarts and is bounded to
+twice the configured per-call attempt count, with a hard maximum of four
+outbound attempts. Shadow mode records transition state but sends nothing.
+An unsent transition is suppressed while a newer candidate/state or
+`not_ready` state is current, so enabling live mode cannot emit obsolete owner
+instructions; it becomes eligible again only if that exact transition returns.
+Pending transitions are eligible only during a fresh source cycle and only
+while the persisted current milestone has the exact same state, SHA, and
+artifact digest. Enabling live mode during a stale or unavailable cycle never
+sends a shadow-persisted transition or consumes its retry budget.
+Classification and reporting remain deterministic.
+
+Run `python mailswarm_observer.py --mode transport-test` only as an explicit
+transport canary. Its message is prefixed `[TEST]`, records
+`test_event=true`, and does not enter live alert history or change work state.
+
+### Explicit deterministic summaries
+
+The future summary transport exists only as an explicit command and is
+disabled by default. It never runs from `run_forever` and this repository adds
+no summary schedule.
+
+`python mailswarm_observer.py --mode morning-summary`
+
+While `MAILSWARM_OBSERVER_SUMMARY_ENABLED=false`, the command reports
+`summary_disabled` without contacting the source, opening the database,
+calling a model, or sending Telegram. When enabled with
+`MAILSWARM_OBSERVER_SUMMARY_SHADOW_MODE=true`, it reads only persisted aggregate
+Observer evidence and prints a clearly labeled deterministic summary without
+sending it. A live explicit summary additionally requires shadow mode false
+for both `MAILSWARM_OBSERVER_SHADOW_MODE` and
+`MAILSWARM_OBSERVER_SUMMARY_SHADOW_MODE`, plus the Observer Telegram
+credentials. `--mode evening-summary` uses the same deterministic path but
+remains unscheduled and off by default.
+
+There is no model call in this implementation. Any future model enrichment is
+permitted only inside this explicit summary path. It must use a cost-conscious
+model and a separately approved hard provider budget before activation; it may
+not be added to classification, incident handling, the watchdog, or continuous
+polling.
+
+### Observer health boundary
+
+When disabled, `/observer/health` remains HTTP 200 with `status=disabled`.
+When enabled, it returns HTTP 200 only for a configured, running Observer with
+a fresh source state and current heartbeat. Stale, unavailable,
+misconfigured, not-started, or persistence-degraded state returns HTTP 503 and
+is visible to the independent watchdog. The main Hermes `/health` endpoint
+continues to include Observer state for information only; Observer degradation
+does not change Hermes/Railway readiness or invoke recovery.
+
+### Independent watchdog
+
+`mailswarm_watchdog.py` is the non-AI, alert-only Phase-14 probe. It must run
+outside the Hermes process and volume with only health URLs and dedicated
+Telegram credentials. It must never receive Railway, Supabase service-role,
+Linear-write, GitHub-write, deployment, merge, or agent-dispatch credentials.
+
+It can check:
+
+- `HERMES_HEALTH_URL`, which is always required because Hermes is the core
+  target; a missing URL is unknown and alerts instead of appearing green
+- `MAILSWARM_OBSERVER_HEALTH_URL`
+- future Daily Operations and Quality Controller heartbeat URLs, only when
+  their `MAILSWARM_WATCHDOG_EXPECT_*` flag is true
+- external integration-test freshness, only when explicitly expected
+
+An absent future target is not a failure. An unreachable or stale target is
+reported as unknown, while only an explicit failed state is reported as
+unhealthy. The watchdog makes at most two GET attempts and its only outgoing
+write is a Telegram alert.
+
+Do not add a scheduled GitHub Actions workflow for this watchdog. Keep it
+unscheduled until an existing, cost-bounded external scheduler is verified and
+activation is approved. `python mailswarm_watchdog.py --mode transport-test`
+is the separate test-only alert canary; it performs no health repair.

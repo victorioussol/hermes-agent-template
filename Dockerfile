@@ -75,6 +75,7 @@ RUN mkdir -p /data/.hermes
 
 COPY server.py /app/server.py
 COPY coo_watchdog.py /app/coo_watchdog.py
+COPY mailswarm_observer.py /app/mailswarm_observer.py
 COPY openrouter_budget_guard.py /app/openrouter_budget_guard.py
 COPY templates/ /app/templates/
 COPY start.sh /app/start.sh
