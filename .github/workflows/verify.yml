@@ -9,11 +9,90 @@ permissions:
   contents: read
 
 jobs:
+  secret-scan:
+    name: Secret scan
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Check out the exact candidate
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Scan with trusted code
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PUSH_BEFORE_SHA: ${{ github.event.before }}
+          EVENT_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          trusted_scanner="$RUNNER_TEMP/secret-scan.py"
+
+          fail_closed() {
+            echo "::error::$1"
+            exit 2
+          }
+
+          valid_commit_id() {
+            [[ "$1" =~ ^[0-9a-f]{40,64}$ ]] && [[ ! "$1" =~ ^0+$ ]]
+          }
+
+          case "$EVENT_NAME" in
+            pull_request)
+              valid_commit_id "$PR_BASE_SHA" || fail_closed "The pull-request base commit is invalid."
+              valid_commit_id "$PR_HEAD_SHA" || fail_closed "The pull-request head commit is invalid."
+              trust_sha="$PR_BASE_SHA"
+              candidate_sha="$PR_HEAD_SHA"
+              range="$PR_BASE_SHA...$PR_HEAD_SHA"
+              ;;
+            push)
+              valid_commit_id "$PUSH_BEFORE_SHA" || fail_closed "A trusted push base could not be established."
+              valid_commit_id "$EVENT_SHA" || fail_closed "The pushed commit is invalid."
+              trust_sha="$PUSH_BEFORE_SHA"
+              candidate_sha="$EVENT_SHA"
+              range="$PUSH_BEFORE_SHA..$EVENT_SHA"
+              ;;
+            workflow_dispatch)
+              valid_commit_id "$EVENT_SHA" || fail_closed "The manual-run commit is invalid."
+              candidate_sha="$EVENT_SHA"
+              trust_sha="$(git rev-parse --verify "$EVENT_SHA^" 2>/dev/null)" || fail_closed "The manual run has no trusted parent commit."
+              range="$trust_sha..$EVENT_SHA"
+              ;;
+            *)
+              fail_closed "Unsupported workflow event."
+              ;;
+          esac
+
+          git cat-file -e "$trust_sha^{commit}" 2>/dev/null || fail_closed "The trusted base commit is unavailable."
+          git cat-file -e "$candidate_sha^{commit}" 2>/dev/null || fail_closed "The candidate commit is unavailable."
+          [[ "$(git rev-parse HEAD)" == "$candidate_sha" ]] || fail_closed "The checkout does not match the candidate commit."
+
+          scanner_source_sha="$trust_sha"
+          if ! git cat-file -e "$scanner_source_sha:scripts/security/secret-scan.py" 2>/dev/null; then
+            # Bootstrap only. After the scanner lands on the default branch,
+            # every later change is judged by the base-owned copy above.
+            scanner_source_sha="$candidate_sha"
+          fi
+          [[ "$(git cat-file -t "$scanner_source_sha:scripts/security/secret-scan.py" 2>/dev/null || true)" == "blob" ]] \
+            || fail_closed "A scanner could not be established."
+          git show "$scanner_source_sha:scripts/security/secret-scan.py" >"$trusted_scanner"
+
+          python3 "$trusted_scanner" --repo "$GITHUB_WORKSPACE" --range "$range"
+
+      - name: Test the candidate scanner
+        run: python3 -m unittest -v scripts/security/test_secret_scan.py
+
   test:
+    needs: secret-scan
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
       - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
@@ -27,7 +106,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
       - uses: docker/setup-buildx-action@v3
       - uses: docker/build-push-action@v6
         with:
