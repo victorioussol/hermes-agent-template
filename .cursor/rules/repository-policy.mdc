@@ -1,0 +1,8 @@
+---
+description: Repository engineering-policy adapter
+alwaysApply: true
+---
+
+# Repository Adapter
+
+Read and follow the root `AGENTS.md` before the first edit. Do routine reversible work autonomously, preserve useful work to its remote task branch early, and group genuine user decisions.
