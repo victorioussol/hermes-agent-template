@@ -1473,6 +1473,102 @@ def cron_health_status() -> dict[str, object]:
     }
 
 
+_CRON_REPORT_INTERVAL_SECONDS = max(
+    15, int(os.environ.get("HERMES_CRON_REPORT_INTERVAL_SECONDS", "60") or "60")
+)
+_cron_reported_failures: dict[str, str] = {}
+_cron_report_task: asyncio.Task | None = None
+
+
+def _cron_log_field(value: object, limit: int = 80) -> str:
+    """Single-line, length-capped, redacted value for a provider log line."""
+    text = redact_sensitive_text(str(value or "")).replace("\n", " ").replace("\r", " ")
+    text = re.sub(r"\s+", " ", text).strip()
+    return (text[:limit] or "-").replace('"', "'")
+
+
+def _cron_schedule_label(job: dict[str, object]) -> str:
+    schedule = job.get("schedule_display") or job.get("schedule")
+    if isinstance(schedule, dict):
+        schedule = schedule.get("display") or schedule.get("expr") or schedule.get("kind")
+    return _cron_log_field(schedule, 40)
+
+
+def report_cron_failures(*, startup: bool = False) -> list[str]:
+    """Print one Railway-visible line per scheduled-job failure or recovery.
+
+    The gateway's own output only reaches an in-memory buffer behind the admin
+    login, so without this a failing job is invisible in Railway logs. Each
+    line carries the job id, name, schedule, run time, and the same safe
+    failure category /health uses. It never prints the prompt, the raw error,
+    or any credential. Each (job, run) pair is reported once.
+    """
+    jobs_path = Path(HERMES_HOME) / "cron" / "jobs.json"
+    try:
+        loaded = json.loads(jobs_path.read_text())
+    except FileNotFoundError:
+        return []
+    except (OSError, json.JSONDecodeError) as exc:
+        line = f"[cron-health] jobs_unreadable error={type(exc).__name__}"
+        print(line, flush=True)
+        return [line]
+    jobs = loaded if isinstance(loaded, list) else (
+        loaded.get("jobs", []) if isinstance(loaded, dict) else []
+    )
+    lines: list[str] = []
+    for job in jobs:
+        if not isinstance(job, dict) or job.get("enabled", True) is False:
+            continue
+        job_id = _cron_log_field(job.get("id"), 40)
+        status = str(job.get("last_status") or "").lower()
+        last_run_raw = str(job.get("last_run_at") or "")
+        failing = status in {"error", "failed", "unknown"}
+        if failing:
+            if _cron_reported_failures.get(job_id) == last_run_raw:
+                continue
+            last_run = _parse_hermes_timestamp(last_run_raw)
+            historical = last_run is None or last_run < _PROCESS_STARTED_AT
+            if historical and not startup:
+                continue
+            _cron_reported_failures[job_id] = last_run_raw
+            line = (
+                f"[cron-health] job_failed id={job_id} "
+                f'name="{_cron_log_field(job.get("name"))}" '
+                f'schedule="{_cron_schedule_label(job)}" '
+                f"last_run_at={_cron_log_field(last_run_raw, 40)} "
+                f"status={_cron_log_field(status, 20)} "
+                f"kind={_cron_failure_kind(job)} "
+                f"delivery_error={'yes' if job.get('last_delivery_error') else 'no'} "
+                f"historical={'true' if historical else 'false'}"
+            )
+        elif job_id in _cron_reported_failures:
+            _cron_reported_failures.pop(job_id, None)
+            line = (
+                f"[cron-health] job_recovered id={job_id} "
+                f'name="{_cron_log_field(job.get("name"))}" '
+                f"last_run_at={_cron_log_field(last_run_raw, 40)} "
+                f"status={_cron_log_field(status, 20)}"
+            )
+        else:
+            continue
+        print(line, flush=True)
+        lines.append(line)
+    return lines
+
+
+async def _cron_failure_reporter() -> None:
+    try:
+        await asyncio.to_thread(report_cron_failures, startup=True)
+    except Exception as exc:
+        print(f"[cron-health] reporter error={type(exc).__name__}", flush=True)
+    while True:
+        await asyncio.sleep(_CRON_REPORT_INTERVAL_SECONDS)
+        try:
+            await asyncio.to_thread(report_cron_failures)
+        except Exception as exc:
+            print(f"[cron-health] reporter error={type(exc).__name__}", flush=True)
+
+
 def fallback_health_status() -> dict[str, object]:
     """Expose whether the bounded OpenRouter fallback can safely take traffic."""
     model = "deepseek/deepseek-v4-flash-0731"
@@ -2000,9 +2096,17 @@ async def lifespan(app):
     await auto_start()
     await _recover_app_ops_jobs()
     await _start_coo_watchdog()
+    global _cron_report_task
+    _cron_report_task = asyncio.create_task(
+        _cron_failure_reporter(), name="hermes-cron-failure-reporter"
+    )
     try:
         yield
     finally:
+        if _cron_report_task is not None:
+            _cron_report_task.cancel()
+            await asyncio.gather(_cron_report_task, return_exceptions=True)
+            _cron_report_task = None
         await _stop_coo_watchdog()
         await _drain_app_ops_tasks()
         await asyncio.gather(
