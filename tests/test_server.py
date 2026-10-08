@@ -135,6 +135,64 @@ class ConfigTests(IsolatedHermesHome):
         }))
         self.assertFalse(server.fallback_health_status()["ready"])
 
+    def _write_jobs(self, jobs):
+        cron_dir = self.home / "cron"
+        cron_dir.mkdir(exist_ok=True)
+        (cron_dir / "jobs.json").write_text(json.dumps({"jobs": jobs}))
+
+    def test_cron_failure_is_logged_once_without_error_or_prompt(self):
+        server._cron_reported_failures.clear()
+        run_at = datetime.now(timezone.utc).isoformat()
+        self._write_jobs([{
+            "id": "job-1",
+            "name": "Career scout",
+            "prompt": "private prompt text",
+            "schedule": {"kind": "cron", "expr": "0 8 * * *", "display": "0 8 * * *"},
+            "enabled": True,
+            "last_status": "error",
+            "last_error": "Provider authentication failed: secret-token-value",
+            "last_run_at": run_at,
+        }])
+        with patch("builtins.print") as fake_print:
+            first = server.report_cron_failures()
+            second = server.report_cron_failures()
+        self.assertEqual(len(first), 1)
+        self.assertEqual(second, [])
+        line = first[0]
+        self.assertIn("job_failed id=job-1", line)
+        self.assertIn('name="Career scout"', line)
+        self.assertIn('schedule="0 8 * * *"', line)
+        self.assertIn("kind=provider_auth", line)
+        self.assertIn("historical=false", line)
+        self.assertNotIn("secret-token-value", line)
+        self.assertNotIn("private prompt text", line)
+        self.assertEqual(fake_print.call_count, 1)
+
+    def test_cron_recovery_is_logged_after_failure(self):
+        server._cron_reported_failures.clear()
+        run_at = datetime.now(timezone.utc).isoformat()
+        job = {"id": "job-2", "name": "Brief", "enabled": True,
+               "last_status": "error", "last_run_at": run_at}
+        self._write_jobs([job])
+        with patch("builtins.print"):
+            server.report_cron_failures()
+            job.update(last_status="ok")
+            self._write_jobs([job])
+            lines = server.report_cron_failures()
+        self.assertEqual(len(lines), 1)
+        self.assertIn("job_recovered id=job-2", lines[0])
+
+    def test_historical_cron_failure_is_logged_only_at_startup(self):
+        server._cron_reported_failures.clear()
+        self._write_jobs([{"id": "old", "name": "Old", "enabled": True,
+                           "last_status": "error",
+                           "last_run_at": "2000-01-01T00:00:00+00:00"}])
+        with patch("builtins.print"):
+            self.assertEqual(server.report_cron_failures(), [])
+            lines = server.report_cron_failures(startup=True)
+        self.assertEqual(len(lines), 1)
+        self.assertIn("historical=true", lines[0])
+
     def test_historical_scheduled_job_failure_does_not_block_deploy(self):
         cron_dir = self.home / "cron"
         cron_dir.mkdir()
